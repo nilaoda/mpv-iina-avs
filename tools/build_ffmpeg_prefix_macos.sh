@@ -419,15 +419,9 @@ if [[ ! -f "$FFMPEG_CAVS_DRA_MACOS_PATCH_PATH" ]]; then
   echo "Missing FFmpeg cavs/dra macOS patch file: $FFMPEG_CAVS_DRA_MACOS_PATCH_PATH" >&2
   exit 1
 fi
-if ! git -C "$SOURCE_DIR" apply "$FFMPEG_CAVS_DRA_MACOS_PATCH_PATH" 2>/dev/null; then
-  if git -C "$SOURCE_DIR" apply --reverse --check "$FFMPEG_CAVS_DRA_MACOS_PATCH_PATH" 2>/dev/null; then
-    log "FFmpeg cavs/dra macOS patch already applied"
-  else
-    if ! git -C "$SOURCE_DIR" apply --ignore-space-change --ignore-whitespace "$FFMPEG_CAVS_DRA_MACOS_PATCH_PATH"; then
-      echo "Failed to apply FFmpeg cavs/dra macOS patch: $FFMPEG_CAVS_DRA_MACOS_PATCH_PATH" >&2
-      exit 1
-    fi
-  fi
+if ! patch -d "$SOURCE_DIR" -p1 --batch --forward -N -l < "$FFMPEG_CAVS_DRA_MACOS_PATCH_PATH"; then
+  echo "Failed to apply FFmpeg cavs/dra macOS patch: $FFMPEG_CAVS_DRA_MACOS_PATCH_PATH" >&2
+  exit 1
 fi
 
 if [[ ! -f "$FFMPEG_CAVS_DRA_FIELD_ORDER_PATCH_PATH" ]]; then
