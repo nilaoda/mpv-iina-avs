@@ -956,7 +956,7 @@ index 0000000..32fe00d
 +    ffstream(stream)->need_parsing = AVSTREAM_PARSE_FULL_RAW;
 +    stream->metadata = extra_language_metadata;
 +    stream->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
-+    stream->codecpar->codec_id = s->iformat->raw_codec_id;
++    stream->codecpar->codec_id = ffifmt(s->iformat)->raw_codec_id;
 +    stream->codecpar->codec_tag = MKTAG('a', 'v', '3', 'a');
 +
 +    if ((ret = avio_read(pb, header, AV3A_MAX_NBYTES_HEADER)) != AV3A_MAX_NBYTES_HEADER)
@@ -1043,7 +1043,7 @@ index 0000000..32fe00d
 +    .read_probe     = av3a_probe,
 +    .read_header    = av3a_read_header,
 +    .read_packet    = av3a_read_packet,
-+    .flags          = AVFMT_GENERIC_INDEX,
++    .p.flags        = AVFMT_GENERIC_INDEX,
 +    .raw_codec_id   = AV_CODEC_ID_AV3A,
 +};
 diff --git a/libavformat/mov.c b/libavformat/mov.c
