@@ -5,6 +5,7 @@ A media-stack build repository for Apple Silicon macOS, focused on producing a r
 This repository maintains its own patch stack. The current approach is:
 
 Disclaimer: Portions of the decoder source code were obtained from publicly available sources and are included solely for research and educational purposes. They are not licensed for commercial use. If you believe any content infringes your rights, please contact me and I will remove it promptly.
+AV3A demuxer/parser/container handling draws from [openharmony/third_party_ffmpeg](https://github.com/openharmony/third_party_ffmpeg).
 
 - keep using `ffmpeg-7.1.2_cavs_dra.patch` from `maliwen2015/ffmpeg_cavs_dra` as the base AVS / AVS+ / DRA enablement patch
 - vendor only the additional fixes that are actually needed here under `tools/patches`
