@@ -127,6 +127,7 @@ DAVS2_EFFECTIVE_EXTRA_LDFLAGS="${DAVS2_EXTRA_LDFLAGS:-$DAVS2_EXTRA_LDFLAGS_DEFAU
 FFMPEG_DAVS2_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0001-libdavs2-export-pkt_pos-from-decoder-output.patch"
 FFMPEG_DAVS2_COLOR_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0004-libdavs2-export-sequence-display-color-metadata.patch"
 FFMPEG_AV3A_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0005-libarcdav3a-add-av3a-audio-vivid-decoder.patch"
+FFMPEG_AV3A_FORMAT_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0006-av3a-container-parser-demux.patch"
 FFMPEG_CAVS_DRA_MACOS_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0002-libcavs-fix-macos-build-compat.patch"
 FFMPEG_CAVS_DRA_FIELD_ORDER_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0003-libcavs-preserve-field-order-and-output-flags.patch"
 DEFAULT_CAVS_DRA_PATCH_PATH="${DEFAULT_CAVS_DRA_PATCH_PATH:-}"
@@ -418,9 +419,15 @@ if [[ ! -f "$FFMPEG_CAVS_DRA_MACOS_PATCH_PATH" ]]; then
   echo "Missing FFmpeg cavs/dra macOS patch file: $FFMPEG_CAVS_DRA_MACOS_PATCH_PATH" >&2
   exit 1
 fi
-if ! patch -d "$SOURCE_DIR" -p1 --batch --forward -N -l < "$FFMPEG_CAVS_DRA_MACOS_PATCH_PATH"; then
-  echo "Failed to apply FFmpeg cavs/dra macOS patch: $FFMPEG_CAVS_DRA_MACOS_PATCH_PATH" >&2
-  exit 1
+if ! git -C "$SOURCE_DIR" apply "$FFMPEG_CAVS_DRA_MACOS_PATCH_PATH" 2>/dev/null; then
+  if git -C "$SOURCE_DIR" apply --reverse --check "$FFMPEG_CAVS_DRA_MACOS_PATCH_PATH" 2>/dev/null; then
+    log "FFmpeg cavs/dra macOS patch already applied"
+  else
+    if ! git -C "$SOURCE_DIR" apply --ignore-space-change --ignore-whitespace "$FFMPEG_CAVS_DRA_MACOS_PATCH_PATH"; then
+      echo "Failed to apply FFmpeg cavs/dra macOS patch: $FFMPEG_CAVS_DRA_MACOS_PATCH_PATH" >&2
+      exit 1
+    fi
+  fi
 fi
 
 if [[ ! -f "$FFMPEG_CAVS_DRA_FIELD_ORDER_PATCH_PATH" ]]; then
@@ -438,6 +445,15 @@ if [[ ! -f "$FFMPEG_AV3A_PATCH_PATH" ]]; then
 fi
 if ! patch -d "$SOURCE_DIR" -p1 --batch --forward -N -l < "$FFMPEG_AV3A_PATCH_PATH"; then
   echo "Failed to apply FFmpeg AV3A patch: $FFMPEG_AV3A_PATCH_PATH" >&2
+  exit 1
+fi
+
+if [[ ! -f "$FFMPEG_AV3A_FORMAT_PATCH_PATH" ]]; then
+  echo "Missing FFmpeg AV3A format patch file: $FFMPEG_AV3A_FORMAT_PATCH_PATH" >&2
+  exit 1
+fi
+if ! patch -d "$SOURCE_DIR" -p1 --batch --forward -N -l < "$FFMPEG_AV3A_FORMAT_PATCH_PATH"; then
+  echo "Failed to apply FFmpeg AV3A format patch: $FFMPEG_AV3A_FORMAT_PATCH_PATH" >&2
   exit 1
 fi
 
