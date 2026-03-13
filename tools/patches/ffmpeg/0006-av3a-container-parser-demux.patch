@@ -368,7 +368,7 @@ new file mode 100644
 index 0000000..0000000
 --- /dev/null
 +++ b/libavcodec/av3a_parser.c
-@@ -0,0 +1,264 @@
+@@ -0,0 +1,276 @@
 +/*
 + * AV3A Parser
 + *
@@ -399,6 +399,7 @@ index 0000000..0000000
 +#include "av3a.h"
 +
 +#define AV3A_HEADER_SIZE (AV3A_MAX_NBYTES_HEADER + 7)
++#define AV3A_MAX_FRAME_SIZE 65536
 +
 +typedef struct {
 +    ParseContext pc;
@@ -540,10 +541,14 @@ index 0000000..0000000
 +
 +static int av3a_calc_frame_size(const AATFHeaderInfo *hdf)
 +{
++    int size;
 +    if (!hdf || hdf->sampling_rate <= 0 || hdf->total_bitrate <= 0)
 +        return AVERROR_INVALIDDATA;
 +
-+    return (int)ceil(((double)hdf->total_bitrate / (double)hdf->sampling_rate) * AV3A_AUDIO_FRAME_SIZE / 8.0);
++    size = (int)ceil(((double)hdf->total_bitrate / (double)hdf->sampling_rate) * AV3A_AUDIO_FRAME_SIZE / 8.0);
++    if (size < AV3A_HEADER_SIZE || size > AV3A_MAX_FRAME_SIZE)
++        return AVERROR_INVALIDDATA;
++    return size;
 +}
 +
 +static int av3a_sync_offset(const uint8_t *buf, int buf_size)
@@ -606,6 +611,13 @@ index 0000000..0000000
 +    }
 +
 +    next = s->frame_size;
++    if (buf_size >= next + 2) {
++        uint16_t word = (uint16_t)((buf[next] << 8) | buf[next + 1]);
++        if ((word >> 4) != AV3A_AUDIO_SYNC_WORD) {
++            int off = av3a_sync_offset(buf + 1, buf_size - 1);
++            next = (off >= 0) ? off + 1 : END_NOT_FOUND;
++        }
++    }
 +    if (ff_combine_frame(pc, next, &buf, &buf_size) < 0 || !buf_size) {
 +        *poutbuf      = NULL;
 +        *poutbuf_size = 0;
@@ -1379,3 +1391,14 @@ index 215783f..e457bc5 100644
      default:
          av_log_once(s, AV_LOG_WARNING, AV_LOG_DEBUG, &ts_st->data_st_warning,
                      "Stream %d, codec %s, is muxed as a private data stream "
+@@ -571,6 +574,8 @@ static int mpegts_write_pmt(AVFormatContext *s, MpegTSService *service)
+         case AVMEDIA_TYPE_AUDIO:
+             if (codec_id == AV_CODEC_ID_AC3)
+                 put_registration_descriptor(&q, MKTAG('A', 'C', '-', '3'));
+             if (codec_id == AV_CODEC_ID_EAC3)
+                 put_registration_descriptor(&q, MKTAG('E', 'A', 'C', '3'));
++            if (codec_id == AV_CODEC_ID_AV3A)
++                put_registration_descriptor(&q, MKTAG('A', 'V', 'S', 'A'));
+             if (ts->flags & MPEGTS_FLAG_SYSTEM_B) {
+                 if (codec_id == AV_CODEC_ID_AC3) {
+                     DVBAC3Descriptor *dvb_ac3_desc = ts_st->dvb_ac3_desc;
