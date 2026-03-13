@@ -365,10 +365,10 @@ index 0000000..fd7f886
 +#endif /* AVCODEC_AV3A_H */
 diff --git a/libavcodec/av3a_parser.c b/libavcodec/av3a_parser.c
 new file mode 100644
-index 0000000..e7873e0
+index 0000000..0000000
 --- /dev/null
 +++ b/libavcodec/av3a_parser.c
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,276 @@
 +/*
 + * AV3A Parser
 + *
@@ -392,23 +392,18 @@ index 0000000..e7873e0
 + */
 +
 +#include <stdint.h>
++#include <math.h>
 +#include "parser.h"
++#include "libavutil/common.h"
 +#include "get_bits.h"
 +#include "av3a.h"
 +
-+typedef struct {
-+    int16_t audio_codec_id;
-+    int16_t nn_type;
-+    int16_t frame_size;
-+    int16_t resolution;
-+    int32_t sample_rate;
-+    int64_t bit_rate;
++#define AV3A_HEADER_SIZE (AV3A_MAX_NBYTES_HEADER + 7)
++#define AV3A_MAX_FRAME_SIZE 65536
 +
-+    int16_t content_type;
-+    int16_t channel_number_index;
-+    int16_t nb_channels;
-+    int16_t nb_objects;
-+    int16_t total_channels;
++typedef struct {
++    ParseContext pc;
++    int frame_size;
 +} Av3aParseContext;
 +
 +static int ff_av3a_header_parse(const uint8_t *buf, const int buf_size, AATFHeaderInfo *hdf)
@@ -544,45 +539,113 @@ index 0000000..e7873e0
 +    return 0;
 +}
 +
-+static int raw_av3a_parse(AVCodecParserContext *s, AVCodecContext *avctx,
++static int av3a_calc_frame_size(const AATFHeaderInfo *hdf)
++{
++    int size;
++    if (!hdf || hdf->sampling_rate <= 0 || hdf->total_bitrate <= 0)
++        return AVERROR_INVALIDDATA;
++
++    size = (int)ceil(((double)hdf->total_bitrate / (double)hdf->sampling_rate) * AV3A_AUDIO_FRAME_SIZE / 8.0);
++    if (size < AV3A_HEADER_SIZE || size > AV3A_MAX_FRAME_SIZE)
++        return AVERROR_INVALIDDATA;
++    return size;
++}
++
++static int av3a_sync_offset(const uint8_t *buf, int buf_size)
++{
++    int i;
++    if (!buf || buf_size < 2)
++        return -1;
++
++    for (i = 0; i + 1 < buf_size; i++) {
++        uint16_t word = (uint16_t)((buf[i] << 8) | buf[i + 1]);
++        if ((word >> 4) == AV3A_AUDIO_SYNC_WORD)
++            return i;
++    }
++    return -1;
++}
++
++static int raw_av3a_parse(AVCodecParserContext *s1, AVCodecContext *avctx,
 +                          const uint8_t **poutbuf, int32_t *poutbuf_size,
 +                          const uint8_t *buf, int32_t buf_size)
 +{
-+    int ret = 0;
++    Av3aParseContext *s = s1->priv_data;
++    ParseContext *pc = &s->pc;
 +    AATFHeaderInfo hdf;
++    int ret;
++    int next = END_NOT_FOUND;
 +
-+    if ((!s) || (!avctx) || (!buf) || (buf_size < (AV3A_MAX_NBYTES_HEADER + 7))) {
++    if ((!s1) || (!avctx) || (!buf) || (buf_size <= 0)) {
 +        *poutbuf      = NULL;
 +        *poutbuf_size = 0;
 +        return buf_size;
 +    }
 +
-+    if ((ret = ff_av3a_header_parse(buf, AV3A_MAX_NBYTES_HEADER + 7, &hdf)) < 0) {
++    if (buf_size < AV3A_HEADER_SIZE) {
++        if (ff_combine_frame(pc, END_NOT_FOUND, &buf, &buf_size) < 0 || !buf_size) {
++            *poutbuf      = NULL;
++            *poutbuf_size = 0;
++            return buf_size;
++        }
++    }
++
++    ret = ff_av3a_header_parse(buf, FFMIN(buf_size, AV3A_HEADER_SIZE), &hdf);
++    if (ret < 0) {
++        int off = av3a_sync_offset(buf + 1, buf_size - 1);
++        next = (off >= 0) ? off + 1 : END_NOT_FOUND;
++        if (ff_combine_frame(pc, next, &buf, &buf_size) < 0 || !buf_size) {
++            *poutbuf      = NULL;
++            *poutbuf_size = 0;
++            return buf_size;
++        }
++        *poutbuf      = buf;
++        *poutbuf_size = buf_size;
++        return next;
++    }
++
++    s->frame_size = av3a_calc_frame_size(&hdf);
++    if (s->frame_size <= 0) {
 +        *poutbuf      = NULL;
 +        *poutbuf_size = 0;
 +        return buf_size;
 +    }
++
++    next = s->frame_size;
++    if (buf_size >= next + 2) {
++        uint16_t word = (uint16_t)((buf[next] << 8) | buf[next + 1]);
++        if ((word >> 4) != AV3A_AUDIO_SYNC_WORD) {
++            int off = av3a_sync_offset(buf + 1, buf_size - 1);
++            next = (off >= 0) ? off + 1 : END_NOT_FOUND;
++        }
++    }
++    if (ff_combine_frame(pc, next, &buf, &buf_size) < 0 || !buf_size) {
++        *poutbuf      = NULL;
++        *poutbuf_size = 0;
++        return buf_size;
++    }
++
++    s1->duration = AV3A_AUDIO_FRAME_SIZE;
 +
 +    avctx->codec_id            = AV_CODEC_ID_AV3A;
 +    avctx->frame_size          = AV3A_AUDIO_FRAME_SIZE;
 +    avctx->bits_per_raw_sample = hdf.resolution;
 +    avctx->sample_rate         = hdf.sampling_rate;
 +    avctx->bit_rate            = hdf.total_bitrate;
-+
 +    avctx->ch_layout.order       = AV_CHANNEL_ORDER_UNSPEC;
 +    avctx->ch_layout.nb_channels = hdf.total_channels;
 +
-+    *poutbuf = buf;
++    *poutbuf      = buf;
 +    *poutbuf_size = buf_size;
-+
-+    return buf_size;
++    return next;
 +}
 +
 +const AVCodecParser ff_av3a_parser = {
 +    .codec_ids = { AV_CODEC_ID_AV3A },
 +    .priv_data_size = sizeof(Av3aParseContext),
 +    .parser_parse = raw_av3a_parse,
++    .parser_close = ff_parse_close,
 +};
+
 diff --git a/libavcodec/parsers.c b/libavcodec/parsers.c
 index 5128009..ad49461 100644
 --- a/libavcodec/parsers.c
@@ -599,7 +662,7 @@ diff --git a/libavformat/Makefile b/libavformat/Makefile
 index 7ca68a7..d14ceda 100644
 --- a/libavformat/Makefile
 +++ b/libavformat/Makefile
-@@ -145,6 +145,7 @@ OBJS-$(CONFIG_AVS2_DEMUXER)              += avs2dec.o rawdec.o
+@@ -145,7 +145,8 @@
  OBJS-$(CONFIG_AVS2_MUXER)                += rawenc.o
  OBJS-$(CONFIG_AVS3_DEMUXER)              += avs3dec.o rawdec.o
  OBJS-$(CONFIG_AVS3_MUXER)                += rawenc.o
@@ -612,7 +675,7 @@ diff --git a/libavformat/allformats.c b/libavformat/allformats.c
 index 305fa46..802c5ee 100644
 --- a/libavformat/allformats.c
 +++ b/libavformat/allformats.c
-@@ -99,6 +99,7 @@ extern const FFInputFormat  ff_avs2_demuxer;
+@@ -99,7 +99,8 @@
  extern const FFOutputFormat ff_avs2_muxer;
  extern const FFInputFormat  ff_avs3_demuxer;
  extern const FFOutputFormat ff_avs3_muxer;
@@ -1288,6 +1351,20 @@ index 83ce396..ceb63c8 100644
      else if (tag == MOV_MP4_IPCM_TAG || tag == MOV_MP4_FPCM_TAG) {
          if (track->par->ch_layout.nb_channels > 1)
              ret = mov_write_chnl_tag(s, pb, track);
+@@ -2005,3 +2005,7 @@
+ {
++    if (track->par->codec_id == AV_CODEC_ID_AV3A) {
++        if (track->par->codec_tag != MKTAG('a', 'v', '3', 'a'))
++            track->par->codec_tag = MKTAG('a', 'v', '3', 'a');
++    }
+     if (is_cover_image(track->st))
+ 
+@@ -8658,4 +8727,5 @@ static const AVCodecTag codec_mp4_tags[] = {
+     { AV_CODEC_ID_AV1,             MKTAG('a', 'v', '0', '1') },
+     { AV_CODEC_ID_AAC,             MKTAG('m', 'p', '4', 'a') },
++    { AV_CODEC_ID_AV3A,            MKTAG('a', 'v', '3', 'a') },
+     { AV_CODEC_ID_ALAC,            MKTAG('a', 'l', 'a', 'c') },
+ 
 diff --git a/libavformat/mpegts.h b/libavformat/mpegts.h
 index 14ae312..1269a48 100644
 --- a/libavformat/mpegts.h
@@ -1314,3 +1391,14 @@ index 215783f..e457bc5 100644
      default:
          av_log_once(s, AV_LOG_WARNING, AV_LOG_DEBUG, &ts_st->data_st_warning,
                      "Stream %d, codec %s, is muxed as a private data stream "
+@@ -571,6 +574,8 @@ static int mpegts_write_pmt(AVFormatContext *s, MpegTSService *service)
+         case AVMEDIA_TYPE_AUDIO:
+             if (codec_id == AV_CODEC_ID_AC3)
+                 put_registration_descriptor(&q, MKTAG('A', 'C', '-', '3'));
+             if (codec_id == AV_CODEC_ID_EAC3)
+                 put_registration_descriptor(&q, MKTAG('E', 'A', 'C', '3'));
++            if (codec_id == AV_CODEC_ID_AV3A)
++                put_registration_descriptor(&q, MKTAG('A', 'V', 'S', 'A'));
+             if (ts->flags & MPEGTS_FLAG_SYSTEM_B) {
+                 if (codec_id == AV_CODEC_ID_AC3) {
+                     DVBAC3Descriptor *dvb_ac3_desc = ts_st->dvb_ac3_desc;

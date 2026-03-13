@@ -218,6 +218,8 @@ Execution order:
   - allows downstream tools such as `ffmpeg`, `ffplay`, `mpv`, and IINA to recognize the basic AVS2 HDR / wide-color signalling correctly
 - `tools/patches/ffmpeg/0005-libarcdav3a-add-av3a-audio-vivid-decoder.patch`
   - adds the ArcVideo `libarcdav3a` AV3A (Audio Vivid) decoder glue
+- `tools/patches/ffmpeg/0006-av3a-container-parser-demux.patch`
+  - adds AV3A container support (parser, demux/mux wiring, and MP4 tag mapping) for Audio Vivid streams
   - registers AV3A codec IDs, container tags, and MPEG-TS stream type mappings needed for demuxing and raw muxing
   - links against the locally built static AVS3 Audio decoder + binaural renderer (no runtime .so/.dylib dependency; model is embedded via `libavs3_common/model.h`)
 

@@ -2008,7 +2008,7 @@ new file mode 100644
 index 0000000..33cfd7f
 --- /dev/null
 +++ b/libavcodec/libarcdav3a.c
-@@ -0,0 +1,643 @@
+@@ -0,0 +1,746 @@
 +#include <stdbool.h>
 +#include <string.h>
 +#include "arcdav3a.h"
@@ -2020,6 +2020,7 @@ index 0000000..33cfd7f
 +#include "libavutil/mastering_display_metadata.h"
 +#include "libavutil/mem.h"
 +#include "libavutil/internal.h"
++#include "libavutil/samplefmt.h"
 +#if ARCH_AARCH64
 +#include <arm_neon.h>
 +#elif ARCH_X86
@@ -2028,6 +2029,18 @@ index 0000000..33cfd7f
 +
 +#define MAX_VIVID_SIZE 4096*64 // decode output buffer (256 KB)
 +#define MAX_SINT16 32768 // max int16 magnitude
++#define AV3A_MAX_FRAME_SAMPLES 2048
++
++static void av3a_copy_s24le_to_s32le(const uint8_t *src, int32_t *dst, unsigned long samples)
++{
++    unsigned long i;
++    for (i = 0; i < samples; i++) {
++        int32_t v = ((int32_t)src[2] << 24) | ((int32_t)src[1] << 16) | ((int32_t)src[0] << 8);
++        v >>= 8; // sign-extend 24-bit to 32-bit
++        dst[i] = v;
++        src += 3;
++    }
++}
 +
 +typedef struct AVS3DecoderOutput
 +{
@@ -2286,9 +2299,45 @@ index 0000000..33cfd7f
 +		if (h->m_bFirstFrame)
 +			h->m_bFirstFrame = false;
 +
++		int bit_depth = h->m_hAvs3->bitDepth > 0 ? h->m_hAvs3->bitDepth : 16;
++		int bytes_per_sample = (bit_depth + 7) / 8;
++		int frame_len = h->m_hAvs3->frameLength;
++		int channels = h->m_hAvs3->numChansOutput;
++		if (channels <= 0 || channels > MAX_CHANNELS || frame_len <= 0 || frame_len > AV3A_MAX_FRAME_SAMPLES ||
++			(bytes_per_sample != 2 && bytes_per_sample != 3)) {
++			av_log(avctx, AV_LOG_ERROR, "invalid av3a header: channels=%d frame_len=%d bit_depth=%d\n",
++				   channels, frame_len, bit_depth);
++			arcdav3a_decode_flush(avctx);
++			outindex = 0;
++			ret = AVS3_FALSE;
++			break;
++		}
++		int expected_bytes = channels * frame_len * bytes_per_sample;
++		if (expected_bytes <= 0 || expected_bytes > MAX_VIVID_SIZE) {
++			av_log(avctx, AV_LOG_ERROR, "invalid av3a frame size: %d bytes\n", expected_bytes);
++			arcdav3a_decode_flush(avctx);
++			outindex = 0;
++			ret = AVS3_FALSE;
++			break;
++		}
++
 +		int outlen = 0;
 +		av_log(avctx, AV_LOG_DEBUG, "begin  avs3_decode! pos:%d m_dwDataLen:%ld h->m_pBuffer:%p pOut->pOutData:%p\n", pos, h->m_dwDataLen, h->m_pBuffer, pOut->pOutData);
++		if (outindex >= MAX_VIVID_SIZE) {
++			av_log(avctx, AV_LOG_ERROR, "output buffer overflow, reset decoder\n");
++			arcdav3a_decode_flush(avctx);
++			outindex = 0;
++			ret = AVS3_FALSE;
++			break;
++		}
 +		ret = h->avs3_decode(h->m_hAvs3, h->m_pBuffer + pos, h->m_dwDataLen - pos, pOut->pOutData + outindex, &outlen, &consumed);
++		if (consumed <= 0 || consumed > (int)(h->m_dwDataLen - pos)) {
++			av_log(avctx, AV_LOG_ERROR, "invalid av3a consumed size: %d\n", consumed);
++			arcdav3a_decode_flush(avctx);
++			outindex = 0;
++			ret = AVS3_FALSE;
++			break;
++		}
 +		pos += consumed;
 +
 +		if ((ret != AVS3_TRUE) || (outlen <= 0))
@@ -2308,26 +2357,47 @@ index 0000000..33cfd7f
 +		if (ret != AVS3_TRUE)
 +			break;
 +
++		if (outlen > 0) {
++			int block = channels * bytes_per_sample;
++			if (block <= 0 || (outlen % block) != 0 || outlen > expected_bytes) {
++				av_log(avctx, AV_LOG_ERROR, "invalid av3a output size: %d\n", outlen);
++				arcdav3a_decode_flush(avctx);
++				outindex = 0;
++				ret = AVS3_FALSE;
++				break;
++			}
++		}
++
 +		h->m_lastChCfg = h->m_hAvs3->channelNumConfig;
 +		h->m_lastObjcnt = h->m_hAvs3->numObjsOutput;
 +		h->m_lastMixtype = h->m_hAvs3->isMixedContent;
 +		h->m_lastBitrateTotal = h->m_hAvs3->totalBitrate;
 +
-+		if (outlen)
++		if (outlen) {
++			if (outindex + outlen > MAX_VIVID_SIZE) {
++				av_log(avctx, AV_LOG_ERROR, "output buffer overflow (%d + %d), reset decoder\n", outindex, outlen);
++				arcdav3a_decode_flush(avctx);
++				outindex = 0;
++				ret = AVS3_FALSE;
++				break;
++			}
 +			outindex += outlen;
-+		else
++		} else {
 +			break;
++		}
 +	} while (h->m_dwDataLen > pos);
 +
 +	if (outindex)
 +	{
++		int bit_depth = h->m_hAvs3->bitDepth > 0 ? h->m_hAvs3->bitDepth : 16;
 +		pOut->nlen = outindex;
-+		pOut->nBits = 16;// m_hAvs3->bitDepth;
++		pOut->nBits = bit_depth;
 +		pOut->nChannel = h->m_hAvs3->numChansOutput;
 +		pOut->nSamplerate = h->m_hAvs3->outputFs;
 +		pOut->nChCfg = h->m_hAvs3->channelNumConfig;
 +		pOut->nObjCnt = h->m_hAvs3->numObjsOutput;
-+		if (h->m_hAvs3->hMetadataDec->avs3MetaData.hasStaticMeta || h->m_hAvs3->hMetadataDec->avs3MetaData.hasDynamicMeta)
++		if (h->m_hAvs3->hMetadataDec &&
++			(h->m_hAvs3->hMetadataDec->avs3MetaData.hasStaticMeta || h->m_hAvs3->hMetadataDec->avs3MetaData.hasDynamicMeta))
 +		{
 +			pOut->nMeta = sizeof(h->m_hAvs3->hMetadataDec->avs3MetaData);
 +			pOut->pMeta = (char*)&h->m_hAvs3->hMetadataDec->avs3MetaData;
@@ -2336,6 +2406,12 @@ index 0000000..33cfd7f
 +		{
 +			pOut->nMeta = 0;
 +			pOut->pMeta = NULL;
++		}
++		if (pOut->nBits == 24 && (pOut->nlen % 3 != 0)) {
++			av_log(avctx, AV_LOG_ERROR, "invalid 24-bit output size; reset decoder\n");
++			arcdav3a_decode_flush(avctx);
++			pOut->nlen = 0;
++			ret = AVS3_FALSE;
 +		}
 +		h->m_hAvs3->numObjsOutput = 0;
 +	}
@@ -2367,11 +2443,13 @@ index 0000000..33cfd7f
 +
 +	if (!pOut || !pOut->pOutData || pOut->nlen <= 0)
 +		return -1;
++	if (pOut->nBits != 16)
++		return -1;
 +
 +	if (h->m_nlastChannels != pOut->nChannel)
 +	{
 +		if(h->m_pRenderBuffer)
-+		    av_freep(h->m_pRenderBuffer);
++		    av_freep(&h->m_pRenderBuffer);
 +		h->m_dwRenderBufferSize = h->m_dwRenderDataLen = 0;
 +		h->m_nlastChannels = pOut->nChannel;
 +	}
@@ -2392,7 +2470,7 @@ index 0000000..33cfd7f
 +		if (tmp)
 +			h->m_pRenderBuffer = tmp;
 +		else
-+			av_freep(h->m_pRenderBuffer);
++			av_freep(&h->m_pRenderBuffer);
 +	}
 +	if (!h->m_pRenderBuffer)
 +		return -1;
@@ -2448,6 +2526,10 @@ index 0000000..33cfd7f
 +			break;
 +		}
 +		av_log(avctx, AV_LOG_DEBUG, "end  GetBinauralInterleavedAudioBuffer!\n");
++		if (pOut->nlen + 1024 * pOut->nChannel * 2 > MAX_VIVID_SIZE) {
++			err = 1;
++			break;
++		}
 +		short* dst = (short*)(pOut->pOutData + pOut->nlen);
 +		for (int i = 0; i < 1024*pOut->nChannel; i++)
 +		{
@@ -2551,7 +2633,13 @@ index 0000000..33cfd7f
 +			}
 +			fclose(fpout);*/
 +			
-+			frm->nb_samples = 1024;
++			int bytes_per_sample = (h->out_frame.nBits == 24) ? 3 : 2;
++			int nb_samples = 0;
++			if (bytes_per_sample > 0 && h->out_frame.nChannel > 0)
++				nb_samples = h->out_frame.nlen / (bytes_per_sample * h->out_frame.nChannel);
++			if (nb_samples <= 0)
++				continue;
++			frm->nb_samples = nb_samples;
 +			frm->sample_rate = h->out_frame.nSamplerate;
 +			ChannelNumConfig chconf = (ChannelNumConfig)h->out_frame.nChCfg;
 +			av_channel_layout_uninit(&frm->ch_layout);
@@ -2579,7 +2667,13 @@ index 0000000..33cfd7f
 +			    return AVERROR(ENOMEM);
 +			avctx->sample_rate = frm->sample_rate;
 +
-+			frm->format = AV_SAMPLE_FMT_S16;
++			if (h->out_frame.nBits == 24) {
++				frm->format = AV_SAMPLE_FMT_S32;
++				avctx->sample_fmt = AV_SAMPLE_FMT_S32;
++			} else {
++				frm->format = AV_SAMPLE_FMT_S16;
++				avctx->sample_fmt = AV_SAMPLE_FMT_S16;
++			}
 +			av_log(avctx, AV_LOG_DEBUG, " before ff_get_buffer! h->out_frame.nlen %ld\n", h->out_frame.nlen);
 +			ret = ff_get_buffer(avctx, frm, 0);//will copy frm->ch_layout from avctx->ch_layout
 +			if (ret < 0){
@@ -2590,7 +2684,16 @@ index 0000000..33cfd7f
 +			if(h->out_frame.nlen > 0)
 +			{
 +				av_log(avctx, AV_LOG_DEBUG, "begin copy buffer!\n");
-+				memcpy(frm->data[0], h->out_frame.pOutData, h->out_frame.nlen);
++				size_t expected = (size_t)frm->nb_samples * bytes_per_sample * h->out_frame.nChannel;
++				size_t copy_len = h->out_frame.nlen;
++				if (copy_len > expected)
++					copy_len = expected;
++				if (h->out_frame.nBits == 24) {
++					unsigned long samples = (unsigned long)(copy_len / 3);
++					av3a_copy_s24le_to_s32le((const uint8_t*)h->out_frame.pOutData, (int32_t*)frm->data[0], samples);
++				} else {
++					memcpy(frm->data[0], h->out_frame.pOutData, copy_len);
++				}
 +				av_log(avctx, AV_LOG_DEBUG, "end copy buffer!\n");
 +				/*if(fpout)
 +				{
