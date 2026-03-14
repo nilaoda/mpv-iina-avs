@@ -205,11 +205,16 @@ Execution order:
 
 - `tools/patches/ffmpeg/0003-libcavs-preserve-field-order-and-output-flags.patch`
   - fixes AVS+ interlaced output metadata handling when field order and interlaced flags were being overwritten or lost during decode output
+  - incorporates timestamp + frame-type handling inspired by [llawsxx/FFmpeg](https://github.com/llawsxx/FFmpeg)
   - specifically:
     - stops incorrectly overwriting `b_top_field_first`
     - records per-output-frame `interlaced` / `top_field_first` state on the `libcavs` output path
     - sets `AV_FRAME_FLAG_INTERLACED` and `AV_FRAME_FLAG_TOP_FIELD_FIRST` correctly in `libcavsdec`
     - uses the delayed frame's own picture structure when outputting delayed frames
+    - propagates per-frame `pts` / `dts` from `libcavs` into `AVFrame`
+    - sets `AV_FRAME_FLAG_KEY` and `AVFrame.pict_type` based on the actual output frame type
+    - keeps delayed output frames' timestamps and picture types consistent with the frame being emitted
+    - resets the libcavs pipeline state on decoder flush to avoid stale frame metadata
   - fixes the playback issue where some 1080i AVS+ samples would stutter, oscillate, or deinterlace incorrectly
 
 - `tools/patches/ffmpeg/0004-libdavs2-export-sequence-display-color-metadata.patch`
