@@ -1,5 +1,5 @@
 diff --git a/configure b/configure
-index 98b582a..bb1426e 100644
+index a0eed36abfe35dcca7f6dce182b9825ad791e65f..272e35193117905316a15ee70a882399970247aa 100755
 --- a/configure
 +++ b/configure
 @@ -313,6 +313,7 @@ External library support:
@@ -10,7 +10,7 @@ index 98b582a..bb1426e 100644
    --enable-lv2             enable LV2 audio filtering [no]
    --disable-lzma           disable lzma [autodetect]
    --enable-decklink        enable Blackmagic DeckLink I/O support [no]
-@@ -1966,6 +1967,7 @@ EXTERNAL_LIBRARY_LIST="
+@@ -1984,6 +1985,7 @@ EXTERNAL_LIBRARY_LIST="
      libtheora
      libtorch
      libtwolame
@@ -18,7 +18,7 @@ index 98b582a..bb1426e 100644
      libuavs3d
      libv4l2
      libvmaf
-@@ -3570,6 +3572,7 @@ libsvtav1_encoder_deps="libsvtav1"
+@@ -3649,6 +3651,7 @@ libsvtav1_encoder_deps="libsvtav1"
  libsvtav1_encoder_select="dovi_rpuenc"
  libtheora_encoder_deps="libtheora"
  libtwolame_encoder_deps="libtwolame"
@@ -26,7 +26,7 @@ index 98b582a..bb1426e 100644
  libuavs3d_decoder_deps="libuavs3d"
  libvo_amrwbenc_encoder_deps="libvo_amrwbenc"
  libvorbis_decoder_deps="libvorbis"
-@@ -7026,6 +7029,7 @@ enabled libtorch          && check_cxxflags -std=c++17 && require_cpp libtorch t
+@@ -7162,6 +7165,7 @@ enabled libtorch          && check_cxxflags -std=c++17 && require_cpp libtorch t
  enabled libtwolame        && require libtwolame twolame.h twolame_init -ltwolame &&
                               { check_lib libtwolame twolame.h twolame_encode_buffer_float32_interleaved -ltwolame ||
                                 die "ERROR: libtwolame must be installed and version must be >= 0.3.10"; }
@@ -34,33 +34,21 @@ index 98b582a..bb1426e 100644
  enabled libuavs3d         && require_pkg_config libuavs3d "uavs3d >= 1.1.41" uavs3d.h uavs3d_decode
  enabled libv4l2           && require_pkg_config libv4l2 libv4l2 libv4l2.h v4l2_ioctl
  enabled libvidstab        && require_pkg_config libvidstab "vidstab >= 0.98" vid.stab/libvidstab.h vsMotionDetectInit
-diff --git a/libavcodec/Makefile b/libavcodec/Makefile
-index 153a9e3..8e5bdde 100644
---- a/libavcodec/Makefile
-+++ b/libavcodec/Makefile
-@@ -1121,6 +1121,7 @@ OBJS-$(CONFIG_LIBCODEC2_DECODER)          += libcodec2.o
- OBJS-$(CONFIG_LIBCODEC2_ENCODER)          += libcodec2.o
- OBJS-$(CONFIG_LIBDAV1D_DECODER)           += libdav1d.o av1_parse.o
- OBJS-$(CONFIG_LIBDAVS2_DECODER)           += libdavs2.o
-+OBJS-$(CONFIG_LIBARCDAV3A_DECODER)        += libarcdav3a.o
- OBJS-$(CONFIG_LIBFDK_AAC_DECODER)         += libfdk-aacdec.o
- OBJS-$(CONFIG_LIBFDK_AAC_ENCODER)         += libfdk-aacenc.o
- OBJS-$(CONFIG_LIBGSM_DECODER)             += libgsmdec.o
 diff --git a/libavcodec/allcodecs.c b/libavcodec/allcodecs.c
-index aa0fc47..5ac9e3b 100644
+index 53cc22849346ed503461ec680f510db6aee32f9e..9e5e37e3affd3fe19a80a57f23dd309dda0b5e03 100644
 --- a/libavcodec/allcodecs.c
 +++ b/libavcodec/allcodecs.c
-@@ -793,6 +793,7 @@ extern const FFCodec ff_libsvtav1_encoder;
+@@ -806,6 +806,7 @@ extern const FFCodec ff_libsvtav1_encoder;
  extern const FFCodec ff_libtheora_encoder;
  extern const FFCodec ff_libtwolame_encoder;
  extern const FFCodec ff_libuavs3d_decoder;
 +extern const FFCodec ff_libarcdav3a_decoder;
+ extern const FFCodec ff_libdra_decoder;
  extern const FFCodec ff_libvo_amrwbenc_encoder;
  extern const FFCodec ff_libvorbis_encoder;
- extern const FFCodec ff_libvorbis_decoder;
 diff --git a/libavcodec/arcdav3a.h b/libavcodec/arcdav3a.h
 new file mode 100644
-index 0000000..7e85f05
+index 0000000000000000000000000000000000000000..7e85f053e9b66f11a418ea7cafe80a5d05f888c4
 --- /dev/null
 +++ b/libavcodec/arcdav3a.h
 @@ -0,0 +1,52 @@
@@ -118,7 +106,7 @@ index 0000000..7e85f05
 +#endif  /// DAVS3_DAVS3_DEC_API_H
 diff --git a/libavcodec/avs3_cnst_com.h b/libavcodec/avs3_cnst_com.h
 new file mode 100644
-index 0000000..9856f4e
+index 0000000000000000000000000000000000000000..9856f4ecde4f856e4ec0ef644fa8cb7a18aa71a8
 --- /dev/null
 +++ b/libavcodec/avs3_cnst_com.h
 @@ -0,0 +1,417 @@
@@ -542,7 +530,7 @@ index 0000000..9856f4e
 \ No newline at end of file
 diff --git a/libavcodec/avs3_const_meta.h b/libavcodec/avs3_const_meta.h
 new file mode 100644
-index 0000000..c68ec7f
+index 0000000000000000000000000000000000000000..c68ec7fb84d54c5db6b78f690e1f5da057448de6
 --- /dev/null
 +++ b/libavcodec/avs3_const_meta.h
 @@ -0,0 +1,219 @@
@@ -767,7 +755,7 @@ index 0000000..c68ec7f
 +#endif
 diff --git a/libavcodec/avs3_options.h b/libavcodec/avs3_options.h
 new file mode 100644
-index 0000000..2343af4
+index 0000000000000000000000000000000000000000..2343af48378cc089dab1688a99b57c361e5185a9
 --- /dev/null
 +++ b/libavcodec/avs3_options.h
 @@ -0,0 +1,89 @@
@@ -863,7 +851,7 @@ index 0000000..2343af4
 \ No newline at end of file
 diff --git a/libavcodec/avs3_stat_com.h b/libavcodec/avs3_stat_com.h
 new file mode 100644
-index 0000000..47b886f
+index 0000000000000000000000000000000000000000..47b886f1a8d924526c2954afc3f2a3a715068bc9
 --- /dev/null
 +++ b/libavcodec/avs3_stat_com.h
 @@ -0,0 +1,496 @@
@@ -1365,7 +1353,7 @@ index 0000000..47b886f
 +#endif // AVS3_STAT_COM_H
 diff --git a/libavcodec/avs3_stat_dec.h b/libavcodec/avs3_stat_dec.h
 new file mode 100644
-index 0000000..ceda0d2
+index 0000000000000000000000000000000000000000..ceda0d2dc69c14fc96469e7870b719dc6a034ae5
 --- /dev/null
 +++ b/libavcodec/avs3_stat_dec.h
 @@ -0,0 +1,203 @@
@@ -1575,7 +1563,7 @@ index 0000000..ceda0d2
 \ No newline at end of file
 diff --git a/libavcodec/avs3_stat_meta.h b/libavcodec/avs3_stat_meta.h
 new file mode 100644
-index 0000000..637ac83
+index 0000000000000000000000000000000000000000..637ac83e61a3f8c2b74ac3d4aa93ea7ec35a128a
 --- /dev/null
 +++ b/libavcodec/avs3_stat_meta.h
 @@ -0,0 +1,386 @@
@@ -1966,17 +1954,10 @@ index 0000000..637ac83
 +
 +#endif
 diff --git a/libavcodec/codec_desc.c b/libavcodec/codec_desc.c
-index d58c3d8..73cd04a 100644
+index 759c1199831879536a9f3f53dc6bb82b5091c3ff..0de21014f61aa8476d3880711763bdafd93cbb35 100644
 --- a/libavcodec/codec_desc.c
 +++ b/libavcodec/codec_desc.c
-@@ -3433,13 +3433,20 @@ static const AVCodecDescriptor codec_descriptors[] = {
-         .long_name = NULL_IF_CONFIG_SMALL("LC3 (Low Complexity Communication Codec)"),
-         .props     = AV_CODEC_PROP_INTRA_ONLY | AV_CODEC_PROP_LOSSY,
-     },
-     {
-         .id        = AV_CODEC_ID_DRA,
-         .type      = AVMEDIA_TYPE_AUDIO,
-         .name      = "dra",
+@@ -3495,6 +3495,13 @@ static const AVCodecDescriptor codec_descriptors[] = {
          .long_name = NULL_IF_CONFIG_SMALL("dra audio decoder"),
          .props     = AV_CODEC_PROP_INTRA_ONLY | AV_CODEC_PROP_LOSSY,
      },
@@ -1987,25 +1968,36 @@ index d58c3d8..73cd04a 100644
 +        .long_name = NULL_IF_CONFIG_SMALL("AV3A audio vivid"),
 +        .props     = AV_CODEC_PROP_LOSSY,
 +    },
- 
-     /* subtitle codecs */
      {
+         .id        = AV_CODEC_ID_G728,
+         .type      = AVMEDIA_TYPE_AUDIO,
 diff --git a/libavcodec/codec_id.h b/libavcodec/codec_id.h
-index 0a8d3be..c3eec4a 100644
+index 788d6630abc7f3dcd65a87f72823be276c052db4..532cb28aa844ae7a79274a3c0576672e750f4312 100644
 --- a/libavcodec/codec_id.h
 +++ b/libavcodec/codec_id.h
-@@ -544,7 +544,8 @@ enum AVCodecID {
-     AV_CODEC_ID_OSQ,
+@@ -556,6 +556,7 @@ enum AVCodecID {
      AV_CODEC_ID_QOA,
      AV_CODEC_ID_LC3,
      AV_CODEC_ID_DRA,
 +    AV_CODEC_ID_AV3A,
+     AV_CODEC_ID_G728,
  
      /* subtitle codecs */
-     AV_CODEC_ID_FIRST_SUBTITLE = 0x17000,          ///< A dummy ID pointing at the start of subtitle codecs.
+diff --git a/libavcodec/Makefile b/libavcodec/Makefile
+index 9e7979b84c8e9eb5d6180ab1090da39ee4e375f5..8a1e3a4d62ec3f454fd73f1fa0a0f1896f8ca5d8 100644
+--- a/libavcodec/Makefile
++++ b/libavcodec/Makefile
+@@ -1186,6 +1186,7 @@ OBJS-$(CONFIG_LIBSPEEX_DECODER)           += libspeexdec.o
+ OBJS-$(CONFIG_LIBSPEEX_ENCODER)           += libspeexenc.o
+ OBJS-$(CONFIG_LIBSVTAV1_ENCODER)          += libsvtav1.o
+ OBJS-$(CONFIG_LIBTHEORA_ENCODER)          += libtheoraenc.o
++OBJS-$(CONFIG_LIBARCDAV3A_DECODER)        += libarcdav3a.o
+ OBJS-$(CONFIG_LIBTWOLAME_ENCODER)         += libtwolame.o
+ OBJS-$(CONFIG_LIBUAVS3D_DECODER)          += libuavs3d.o
+ OBJS-$(CONFIG_LIBVO_AMRWBENC_ENCODER)     += libvo-amrwbenc.o
 diff --git a/libavcodec/libarcdav3a.c b/libavcodec/libarcdav3a.c
 new file mode 100644
-index 0000000..33cfd7f
+index 0000000000000000000000000000000000000000..68b951865edd7e639e05bcc61693157f9d5e5a74
 --- /dev/null
 +++ b/libavcodec/libarcdav3a.c
 @@ -0,0 +1,746 @@
@@ -2756,19 +2748,19 @@ index 0000000..33cfd7f
 +	.close            = arcdav3a_decode_close,
 +};
 diff --git a/libavcodec/packet.c b/libavcodec/packet.c
-index 381001f..c19e1cf 100644
+index 2d1f282927be0e83700a0cc7934d2dbf5504eea2..ba0017807284e5ea0514521b539c86c01a9b25a1 100644
 --- a/libavcodec/packet.c
 +++ b/libavcodec/packet.c
-@@ -306,6 +306,7 @@ const char *av_packet_side_data_name(enum AVPacketSideDataType type)
+@@ -307,6 +307,7 @@ const char *av_packet_side_data_name(enum AVPacketSideDataType type)
      case AV_PKT_DATA_IAMF_DEMIXING_INFO_PARAM:   return "IAMF Demixing Info Parameter Data";
      case AV_PKT_DATA_IAMF_RECON_GAIN_INFO_PARAM: return "IAMF Recon Gain Info Parameter Data";
      case AV_PKT_DATA_FRAME_CROPPING:             return "Frame Cropping";
 +    case AV_PKT_DATA_AUDIO_VIVID:               return "Audio Vivid";
      case AV_PKT_DATA_LCEVC:                      return "LCEVC NAL data";
-     }
-     return NULL;
+     case AV_PKT_DATA_3D_REFERENCE_DISPLAYS:      return "3D Reference Displays Info";
+     case AV_PKT_DATA_RTCP_SR:                    return "RTCP Sender Report";
 diff --git a/libavcodec/packet.h b/libavcodec/packet.h
-index 0a28010..03d96be 100644
+index 55389a957d80899368dea555a8eb4722ca4f167c..906da677e8bf4d929a6ae54d5b7ab7b68c0f4838 100644
 --- a/libavcodec/packet.h
 +++ b/libavcodec/packet.h
 @@ -345,6 +345,11 @@ enum AVPacketSideDataType {
@@ -2781,13 +2773,13 @@ index 0a28010..03d96be 100644
 +    AV_PKT_DATA_AUDIO_VIVID,
 +
      /**
-      * The number of side data types.
-      * This is not part of the public API/ABI in the sense that it may
+      * This side data contains information about the reference display width(s)
+      * and reference viewing distance(s) as well as information about the
 diff --git a/libavformat/Makefile b/libavformat/Makefile
-index 7ca68a7..f800181 100644
+index ab5551a7357863e430cd49e3f6dea3eea63ceda0..f553e88a6bcb0eb79d1328dfbf3c590bc1181c5b 100644
 --- a/libavformat/Makefile
 +++ b/libavformat/Makefile
-@@ -145,6 +145,7 @@ OBJS-$(CONFIG_AVS2_DEMUXER)              += avs2dec.o rawdec.o
+@@ -149,6 +149,7 @@ OBJS-$(CONFIG_AVS2_DEMUXER)              += avs2dec.o rawdec.o
  OBJS-$(CONFIG_AVS2_MUXER)                += rawenc.o
  OBJS-$(CONFIG_AVS3_DEMUXER)              += avs3dec.o rawdec.o
  OBJS-$(CONFIG_AVS3_MUXER)                += rawenc.o
@@ -2796,10 +2788,10 @@ index 7ca68a7..f800181 100644
  OBJS-$(CONFIG_BFI_DEMUXER)               += bfi.o
  OBJS-$(CONFIG_BINK_DEMUXER)              += bink.o
 diff --git a/libavformat/allformats.c b/libavformat/allformats.c
-index 305fa46..69070fb 100644
+index e39eab8e85d7b3b960c3db9082a3dc067bfc21f5..d3935b1b0f52d69238baa983a605cd38949b951c 100644
 --- a/libavformat/allformats.c
 +++ b/libavformat/allformats.c
-@@ -99,6 +99,7 @@ extern const FFInputFormat  ff_avs2_demuxer;
+@@ -101,6 +101,7 @@ extern const FFInputFormat  ff_avs2_demuxer;
  extern const FFOutputFormat ff_avs2_muxer;
  extern const FFInputFormat  ff_avs3_demuxer;
  extern const FFOutputFormat ff_avs3_muxer;
@@ -2808,10 +2800,10 @@ index 305fa46..69070fb 100644
  extern const FFInputFormat  ff_bfi_demuxer;
  extern const FFInputFormat  ff_bintext_demuxer;
 diff --git a/libavformat/isom_tags.c b/libavformat/isom_tags.c
-index 5dd72d5..74a2eab 100644
+index 151c42e9e60f4353bd4711b22ad53c5d6a597402..aeb08179d3738afb7121578f1b306998c8c88bfa 100644
 --- a/libavformat/isom_tags.c
 +++ b/libavformat/isom_tags.c
-@@ -353,6 +353,7 @@ const AVCodecTag ff_codec_movaudio_tags[] = {
+@@ -366,6 +366,7 @@ const AVCodecTag ff_codec_movaudio_tags[] = {
      { AV_CODEC_ID_TRUEHD,          MKTAG('m', 'l', 'p', 'a') }, /* mp4ra.org */
      { AV_CODEC_ID_OPUS,            MKTAG('O', 'p', 'u', 's') }, /* mp4ra.org */
      { AV_CODEC_ID_MPEGH_3D_AUDIO,  MKTAG('m', 'h', 'm', '1') }, /* MPEG-H 3D Audio bitstream */
@@ -2820,19 +2812,19 @@ index 5dd72d5..74a2eab 100644
  };
  
 diff --git a/libavformat/mpegts.c b/libavformat/mpegts.c
-index 86b7c8e..36b5627 100644
+index 4f50289616f3e16173691c6b0747090395f8045d..d7c8a414c7cd3e33e65732bb3847a8d65db29d40 100644
 --- a/libavformat/mpegts.c
 +++ b/libavformat/mpegts.c
-@@ -819,6 +819,7 @@ static const StreamType ISO_types[] = {
-     { 0xd1, AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_DIRAC      },
-     { 0xd2, AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_AVS2       },
-     { 0xd4, AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_AVS3       },
-+    { 0xd5, AVMEDIA_TYPE_AUDIO, AV_CODEC_ID_AV3A       },
-     { 0xea, AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_VC1        },
+@@ -820,6 +820,7 @@ static const StreamType ISO_types[] = {
+     { STREAM_TYPE_VIDEO_DIRAC,    AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_DIRAC      },
+     { STREAM_TYPE_VIDEO_AVS2,     AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_AVS2       },
+     { STREAM_TYPE_VIDEO_AVS3,     AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_AVS3       },
++    { 0xd5,                      AVMEDIA_TYPE_AUDIO, AV_CODEC_ID_AV3A       },
+     { STREAM_TYPE_VIDEO_VC1,      AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_VC1        },
      { 0 },
  };
 diff --git a/libavformat/rawenc.c b/libavformat/rawenc.c
-index cf298d2..6f5c58f 100644
+index cf298d223d833ba6cfa1c0053b7241995a86b91c..6f5c58fb7e6ddc696dabc3364af13c752d05e744 100644
 --- a/libavformat/rawenc.c
 +++ b/libavformat/rawenc.c
 @@ -147,6 +147,21 @@ const FFOutputFormat ff_avs3_muxer = {

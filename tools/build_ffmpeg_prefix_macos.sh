@@ -26,6 +26,18 @@ fetch_git_ref() {
   git -C "$dest" checkout --detach FETCH_HEAD >/dev/null
 }
 
+apply_patch_with_fallback() {
+  local target_dir="$1"
+  local patch_path="$2"
+
+  if git -C "$target_dir" apply --check --recount --ignore-space-change --ignore-whitespace "$patch_path" >/dev/null 2>&1; then
+    git -C "$target_dir" apply --recount --ignore-space-change --ignore-whitespace "$patch_path"
+    return 0
+  fi
+
+  patch -d "$target_dir" -p1 --batch --forward -N -l < "$patch_path"
+}
+
 clang_supports_arm64_flag() {
   local flag="$1"
   local tmp_obj
@@ -171,19 +183,11 @@ AV3A_EFFECTIVE_EXTRA_CFLAGS="${AV3A_EXTRA_CFLAGS:-$AV3A_EXTRA_CFLAGS_DEFAULT}"
 AV3A_EFFECTIVE_EXTRA_CXXFLAGS="${AV3A_EXTRA_CXXFLAGS:-$AV3A_EXTRA_CXXFLAGS_DEFAULT}"
 DAVS2_EFFECTIVE_EXTRA_CFLAGS="${DAVS2_EXTRA_CFLAGS:-$DAVS2_EXTRA_CFLAGS_DEFAULT}"
 DAVS2_EFFECTIVE_EXTRA_LDFLAGS="${DAVS2_EXTRA_LDFLAGS:-$DAVS2_EXTRA_LDFLAGS_DEFAULT}"
-FFMPEG_DAVS2_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0001-libdavs2-export-pkt_pos-from-decoder-output.patch"
 FFMPEG_DAVS2_COLOR_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0004-libdavs2-export-sequence-display-color-metadata.patch"
 FFMPEG_AV3A_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0005-libarcdav3a-add-av3a-audio-vivid-decoder.patch"
 FFMPEG_AV3A_FORMAT_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0006-av3a-container-parser-demux.patch"
 FFMPEG_UAVS3D_APPLE_THREADS_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0007-libuavs3d-tune-apple-silicon-auto-threads.patch"
-FFMPEG_CAVS_DRA_MACOS_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0002-libcavs-fix-macos-build-compat.patch"
-FFMPEG_CAVS_DRA_FIELD_ORDER_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0003-libcavs-preserve-field-order-and-output-flags.patch"
-DEFAULT_CAVS_DRA_PATCH_PATH="${DEFAULT_CAVS_DRA_PATCH_PATH:-}"
-CAVS_DRA_GIT_URL="https://github.com/maliwen2015/ffmpeg_cavs_dra.git"
-CAVS_DRA_GIT_REF="${CAVS_DRA_GIT_REF:-abae276fed97ce08928f25c8f5e03fd915687f54}"
-CAVS_DRA_SOURCE_DIR="$SOURCE_ROOT/ffmpeg_cavs_dra"
-CAVS_DRA_PATCH_CACHE_PATH="$CAVS_DRA_SOURCE_DIR/ffmpeg-7.1.2_cavs_dra.patch"
-FFMPEG_CAVS_DRA_PATCH_PATH="${FFMPEG_CAVS_DRA_PATCH_PATH:-}"
+FFMPEG_CAVS_DRA_BASE_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0002-libcavs-add-avs-avsplus-dra-base.patch"
 DAVS2_CONFIGURE_HOST="${DAVS2_CONFIGURE_HOST:-aarch64-apple-darwin}"
 ENABLE_LIBDAVS2=false
 ENABLE_LIBARCDAV3A=false
@@ -199,6 +203,7 @@ if [[ ! -f "$SOURCE_ARCHIVE" ]]; then
 fi
 rm -rf "$SOURCE_DIR"
 tar -xf "$SOURCE_ARCHIVE" -C "$SOURCE_ROOT"
+git init "$SOURCE_DIR" >/dev/null
 rm -rf "$FFMPEG_PREFIX" "$UAVS3D_INSTALL_ROOT" "$UAVS3D_SOURCE_DIR" "$DAVS2_INSTALL_ROOT" "$DAVS2_SOURCE_DIR"
 rm -rf "$AV3A_INSTALL_ROOT" "$AV3A_SOURCE_DIR" "$AV3A_BUILD_ROOT"
 mkdir -p "$FFMPEG_PREFIX" "$UAVS3D_INSTALL_ROOT" "$AV3A_INSTALL_ROOT"
@@ -208,8 +213,9 @@ fetch_git_ref "$UAVS3D_GIT_URL" "$UAVS3D_GIT_REF" "$UAVS3D_SOURCE_DIR"
 if [[ -d "$UAVS3D_PATCH_ROOT" ]]; then
   while IFS= read -r patch_path; do
     log "Applying uavs3d $(basename "$patch_path")"
-    if ! git -C "$UAVS3D_SOURCE_DIR" apply "$patch_path"; then
-      patch -d "$UAVS3D_SOURCE_DIR" -p1 -l < "$patch_path"
+    if ! apply_patch_with_fallback "$UAVS3D_SOURCE_DIR" "$patch_path"; then
+      echo "Failed to apply uavs3d patch: $patch_path" >&2
+      exit 1
     fi
   done < <(find "$UAVS3D_PATCH_ROOT" -maxdepth 1 -type f -name '*.patch' | sort)
 fi
@@ -449,14 +455,13 @@ if [[ ! -f "$FFMPEG_UAVS3D_APPLE_THREADS_PATCH_PATH" ]]; then
   echo "Missing FFmpeg uavs3d Apple Silicon threads patch file: $FFMPEG_UAVS3D_APPLE_THREADS_PATCH_PATH" >&2
   exit 1
 fi
-if ! patch -d "$SOURCE_DIR" -p1 --batch --forward -N -l < "$FFMPEG_UAVS3D_APPLE_THREADS_PATCH_PATH"; then
+if ! apply_patch_with_fallback "$SOURCE_DIR" "$FFMPEG_UAVS3D_APPLE_THREADS_PATCH_PATH"; then
   echo "Failed to apply FFmpeg uavs3d Apple Silicon threads patch: $FFMPEG_UAVS3D_APPLE_THREADS_PATCH_PATH" >&2
   exit 1
 fi
 
 if [[ "$ENABLE_LIBDAVS2" == true ]]; then
   ffmpeg_davs2_patch_paths=(
-    "$FFMPEG_DAVS2_PATCH_PATH"
     "$FFMPEG_DAVS2_COLOR_PATCH_PATH"
   )
   for patch_path in "${ffmpeg_davs2_patch_paths[@]}"; do
@@ -464,50 +469,19 @@ if [[ "$ENABLE_LIBDAVS2" == true ]]; then
       echo "Missing FFmpeg davs2 patch file: $patch_path" >&2
       exit 1
     fi
-    if ! patch -d "$SOURCE_DIR" -p1 --forward < "$patch_path"; then
-      patch -d "$SOURCE_DIR" -p1 --forward -l < "$patch_path"
+    if ! apply_patch_with_fallback "$SOURCE_DIR" "$patch_path"; then
+      echo "Failed to apply FFmpeg davs2 patch: $patch_path" >&2
+      exit 1
     fi
   done
 fi
 
-if [[ -z "$FFMPEG_CAVS_DRA_PATCH_PATH" ]]; then
-  if [[ -n "$DEFAULT_CAVS_DRA_PATCH_PATH" && -f "$DEFAULT_CAVS_DRA_PATCH_PATH" ]]; then
-    FFMPEG_CAVS_DRA_PATCH_PATH="$DEFAULT_CAVS_DRA_PATCH_PATH"
-  else
-    fetch_git_ref "$CAVS_DRA_GIT_URL" "$CAVS_DRA_GIT_REF" "$CAVS_DRA_SOURCE_DIR"
-    FFMPEG_CAVS_DRA_PATCH_PATH="$CAVS_DRA_PATCH_CACHE_PATH"
-  fi
-fi
-
-if [[ ! -f "$FFMPEG_CAVS_DRA_PATCH_PATH" ]]; then
-  echo "Missing FFmpeg cavs/dra patch file: $FFMPEG_CAVS_DRA_PATCH_PATH" >&2
+if [[ ! -f "$FFMPEG_CAVS_DRA_BASE_PATCH_PATH" ]]; then
+  echo "Missing FFmpeg cavs/dra base patch file: $FFMPEG_CAVS_DRA_BASE_PATCH_PATH" >&2
   exit 1
 fi
-if ! git -C "$SOURCE_DIR" apply -p2 --check "$FFMPEG_CAVS_DRA_PATCH_PATH" 2>/dev/null; then
-  if ! git -C "$SOURCE_DIR" apply -p2 --check --recount --ignore-space-change --ignore-whitespace "$FFMPEG_CAVS_DRA_PATCH_PATH" 2>/dev/null; then
-    echo "Failed to validate FFmpeg cavs/dra patch against ffmpeg-$FFMPEG_VERSION" >&2
-    exit 1
-  fi
-fi
-if ! git -C "$SOURCE_DIR" apply -p2 "$FFMPEG_CAVS_DRA_PATCH_PATH" 2>/dev/null; then
-  git -C "$SOURCE_DIR" apply -p2 --recount --ignore-space-change --ignore-whitespace "$FFMPEG_CAVS_DRA_PATCH_PATH"
-fi
-
-if [[ ! -f "$FFMPEG_CAVS_DRA_MACOS_PATCH_PATH" ]]; then
-  echo "Missing FFmpeg cavs/dra macOS patch file: $FFMPEG_CAVS_DRA_MACOS_PATCH_PATH" >&2
-  exit 1
-fi
-if ! patch -d "$SOURCE_DIR" -p1 --batch --forward -N -l < "$FFMPEG_CAVS_DRA_MACOS_PATCH_PATH"; then
-  echo "Failed to apply FFmpeg cavs/dra macOS patch: $FFMPEG_CAVS_DRA_MACOS_PATCH_PATH" >&2
-  exit 1
-fi
-
-if [[ ! -f "$FFMPEG_CAVS_DRA_FIELD_ORDER_PATCH_PATH" ]]; then
-  echo "Missing FFmpeg cavs/dra field-order patch file: $FFMPEG_CAVS_DRA_FIELD_ORDER_PATCH_PATH" >&2
-  exit 1
-fi
-if ! patch -d "$SOURCE_DIR" -p1 --batch --forward -N -l < "$FFMPEG_CAVS_DRA_FIELD_ORDER_PATCH_PATH"; then
-  echo "Failed to apply FFmpeg cavs/dra field-order patch: $FFMPEG_CAVS_DRA_FIELD_ORDER_PATCH_PATH" >&2
+if ! apply_patch_with_fallback "$SOURCE_DIR" "$FFMPEG_CAVS_DRA_BASE_PATCH_PATH"; then
+  echo "Failed to apply FFmpeg cavs/dra base patch: $FFMPEG_CAVS_DRA_BASE_PATCH_PATH" >&2
   exit 1
 fi
 
@@ -515,7 +489,7 @@ if [[ ! -f "$FFMPEG_AV3A_PATCH_PATH" ]]; then
   echo "Missing FFmpeg AV3A patch file: $FFMPEG_AV3A_PATCH_PATH" >&2
   exit 1
 fi
-if ! patch -d "$SOURCE_DIR" -p1 --batch --forward -N -l < "$FFMPEG_AV3A_PATCH_PATH"; then
+if ! apply_patch_with_fallback "$SOURCE_DIR" "$FFMPEG_AV3A_PATCH_PATH"; then
   echo "Failed to apply FFmpeg AV3A patch: $FFMPEG_AV3A_PATCH_PATH" >&2
   exit 1
 fi
@@ -524,7 +498,7 @@ if [[ ! -f "$FFMPEG_AV3A_FORMAT_PATCH_PATH" ]]; then
   echo "Missing FFmpeg AV3A format patch file: $FFMPEG_AV3A_FORMAT_PATCH_PATH" >&2
   exit 1
 fi
-if ! patch -d "$SOURCE_DIR" -p1 --batch --forward -N -l < "$FFMPEG_AV3A_FORMAT_PATCH_PATH"; then
+if ! apply_patch_with_fallback "$SOURCE_DIR" "$FFMPEG_AV3A_FORMAT_PATCH_PATH"; then
   echo "Failed to apply FFmpeg AV3A format patch: $FFMPEG_AV3A_FORMAT_PATCH_PATH" >&2
   exit 1
 fi
