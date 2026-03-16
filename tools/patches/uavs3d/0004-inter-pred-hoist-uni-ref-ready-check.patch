@@ -1,0 +1,126 @@
+diff --git a/source/decore/inter_pred.c b/source/decore/inter_pred.c
+index 0000000..0000000 100644
+--- a/source/decore/inter_pred.c
++++ b/source/decore/inter_pred.c
+@@ -280,7 +280,7 @@
+     }
+ }
+ 
+-void uavs3d_always_inline mc_core_luma(com_pic_t* ref, int i_src, pel *dst, int dst_stride, int x_pos, int y_pos, int width, int height, int widx, int max_posx, int max_posy, int max_val, int hp_flag) 
++static void uavs3d_always_inline mc_core_luma_impl(com_pic_t* ref, int i_src, pel *dst, int dst_stride, int x_pos, int y_pos, int width, int height, int widx, int max_posx, int max_posy, int max_val, int hp_flag, int check_ref)
+ {
+     const s8 (*coeff)[8];
+     int dx, dy;
+@@ -302,7 +302,9 @@
+     x_pos = COM_CLIP3(-MAX_CU_SIZE - 4, max_posx, x_pos);
+     y_pos = COM_CLIP3(-MAX_CU_SIZE - 4, max_posy, y_pos);
+ 
+-    uavs3d_check_ref_avaliable(ref, y_pos + height + 4);
++    if (check_ref) {
++        uavs3d_check_ref_avaliable(ref, y_pos + height + 4);
++    }
+ 
+     pel *src = ref->y + y_pos * i_src + x_pos;
+ 
+@@ -320,7 +322,7 @@
+     }
+ }
+ 
+-void uavs3d_always_inline mc_core_chroma(com_pic_t* ref, int i_src, pel *dst, int dst_stride, int x_pos, int y_pos, int width, int height, int widx, int max_posx, int max_posy, int max_val, int hp_flag) 
++static void uavs3d_always_inline mc_core_chroma_impl(com_pic_t* ref, int i_src, pel *dst, int dst_stride, int x_pos, int y_pos, int width, int height, int widx, int max_posx, int max_posy, int max_val, int hp_flag, int check_ref)
+ {
+     int dx,dy;
+     const s8 (*coeff)[4];
+@@ -342,7 +344,9 @@
+     x_pos = COM_CLIP3(-(MAX_CU_SIZE >> 1) - 2, max_posx, x_pos);
+     y_pos = COM_CLIP3(-(MAX_CU_SIZE >> 1) - 2, max_posy, y_pos);
+ 
+-    uavs3d_check_ref_avaliable(ref, ((y_pos + height) << 1) + 4);
++    if (check_ref) {
++        uavs3d_check_ref_avaliable(ref, ((y_pos + height) << 1) + 4);
++    }
+ 
+     pel *src = ref->uv + y_pos * i_src + (x_pos << 1);
+ 
+@@ -360,6 +364,55 @@
+     }
+ }
+ 
++static void uavs3d_always_inline mc_core_luma(com_pic_t* ref, int i_src, pel *dst, int dst_stride, int x_pos, int y_pos, int width, int height, int widx, int max_posx, int max_posy, int max_val, int hp_flag)
++{
++    mc_core_luma_impl(ref, i_src, dst, dst_stride, x_pos, y_pos, width, height, widx, max_posx, max_posy, max_val, hp_flag, 1);
++}
++
++static void uavs3d_always_inline mc_core_luma_no_check(com_pic_t* ref, int i_src, pel *dst, int dst_stride, int x_pos, int y_pos, int width, int height, int widx, int max_posx, int max_posy, int max_val, int hp_flag)
++{
++    mc_core_luma_impl(ref, i_src, dst, dst_stride, x_pos, y_pos, width, height, widx, max_posx, max_posy, max_val, hp_flag, 0);
++}
++
++static void uavs3d_always_inline mc_core_chroma(com_pic_t* ref, int i_src, pel *dst, int dst_stride, int x_pos, int y_pos, int width, int height, int widx, int max_posx, int max_posy, int max_val, int hp_flag)
++{
++    mc_core_chroma_impl(ref, i_src, dst, dst_stride, x_pos, y_pos, width, height, widx, max_posx, max_posy, max_val, hp_flag, 1);
++}
++
++static void uavs3d_always_inline mc_core_chroma_no_check(com_pic_t* ref, int i_src, pel *dst, int dst_stride, int x_pos, int y_pos, int width, int height, int widx, int max_posx, int max_posy, int max_val, int hp_flag)
++{
++    mc_core_chroma_impl(ref, i_src, dst, dst_stride, x_pos, y_pos, width, height, widx, max_posx, max_posy, max_val, hp_flag, 0);
++}
++
++static uavs3d_always_inline int mc_ref_line_luma(int qpel_y, int height, int max_posy)
++{
++    int y_pos = COM_CLIP3(-MAX_CU_SIZE - 4, max_posy, qpel_y >> 2);
++    return y_pos + height + 4;
++}
++
++static uavs3d_always_inline int mc_ref_line_chroma(int qpel_y, int height, int max_posy)
++{
++    int y_pos = COM_CLIP3(-(MAX_CU_SIZE >> 1) - 2, max_posy, qpel_y >> 3);
++    return ((y_pos + height) << 1) + 4;
++}
++
++static uavs3d_always_inline void mc_check_ref_ready(com_pic_t *ref_pic, int qpel_gmv_y, int h, int tree_status, int max_posy)
++{
++    int line_num;
++
++    if (tree_status == TREE_C) {
++        line_num = mc_ref_line_chroma(qpel_gmv_y, h >> 1, max_posy >> 1);
++    } else if (tree_status == TREE_L) {
++        line_num = mc_ref_line_luma(qpel_gmv_y, h, max_posy);
++    } else {
++        int line_luma = mc_ref_line_luma(qpel_gmv_y, h, max_posy);
++        int line_chroma = mc_ref_line_chroma(qpel_gmv_y, h >> 1, max_posy >> 1);
++        line_num = COM_MAX(line_luma, line_chroma);
++    }
++
++    uavs3d_check_ref_avaliable(ref_pic, line_num);
++}
++
+ static void uavs3d_always_inline com_mc_uni(com_core_t *core, pel *pred_buf)
+ {
+     s8 *refi = core->refi;
+@@ -388,6 +441,8 @@
+         int qpel_gmv_x = (x << 2) + mv[lidx][MV_X];
+         int qpel_gmv_y = (y << 2) + mv[lidx][MV_Y];
+ 
++        mc_check_ref_ready(ref_pic, qpel_gmv_y, h, tree_status, max_posy);
++
+         if (!M32(core->cbfy)) {
+             i_dst = pic->stride_luma;
+             dst = pic->y + y * i_dst + x;
+@@ -395,7 +450,7 @@
+             i_dst = w;
+             dst = pred_buf;
+         }
+-        mc_core_luma(ref_pic, i_src, dst, i_dst, qpel_gmv_x, qpel_gmv_y, w, h, widx, max_posx, max_posy, max_val, 0);
++        mc_core_luma_no_check(ref_pic, i_src, dst, i_dst, qpel_gmv_x, qpel_gmv_y, w, h, widx, max_posx, max_posy, max_val, 0);
+     }
+ 
+     if (tree_status != TREE_L) {
+@@ -413,7 +468,7 @@
+             dst = pred_buf + blk_dim;
+         }
+ 
+-        mc_core_chroma(ref_pic, i_srcc, dst, i_dst, qpel_gmv_x, qpel_gmv_y, w, h >> 1, widx, max_posx >> 1, max_posy >> 1, max_val, 0);
++        mc_core_chroma_no_check(ref_pic, i_srcc, dst, i_dst, qpel_gmv_x, qpel_gmv_y, w, h >> 1, widx, max_posx >> 1, max_posy >> 1, max_val, 0);
+     }
+ }

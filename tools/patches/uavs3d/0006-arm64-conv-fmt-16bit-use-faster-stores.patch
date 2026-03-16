@@ -1,0 +1,61 @@
+diff --git a/source/decore/arm64/pixel_arm64.S b/source/decore/arm64/pixel_arm64.S
+index 7c1c9ba..eaed5c0 100644
+--- a/source/decore/arm64/pixel_arm64.S
++++ b/source/decore/arm64/pixel_arm64.S
+@@ -739,7 +739,8 @@ conv_fmt_16bit_y_width_loop32:
+     bgt conv_fmt_16bit_y_width_loop8
+     ld1 {v0.16b, v1.16b, v2.16b, v3.16b}, [x15], #64
+     mov x9, x14
+-    st1 {v0.16b, v1.16b, v2.16b, v3.16b}, [x21], #64
++    stp q0, q1, [x21], #32
++    stp q2, q3, [x21], #32
+     b conv_fmt_16bit_y_width_loop32
+ 
+ conv_fmt_16bit_y_width_loop8:
+@@ -748,7 +749,7 @@ conv_fmt_16bit_y_width_loop8:
+     bgt conv_fmt_16bit_y_width_loop1
+     ld1 {v0.16b}, [x15], #16
+     mov x9, x14
+-    st1 {v0.16b}, [x21], #16
++    str q0, [x21], #16
+     b conv_fmt_16bit_y_width_loop8
+ 
+ conv_fmt_16bit_y_width_loop1:
+@@ -795,7 +796,8 @@ conv_fmt_16bit_u_width_loop16:
+     xtn v1.4h, v1.4s
+     xtn v2.4h, v2.4s
+     xtn v3.4h, v3.4s
+-    st1 {v0.4h, v1.4h, v2.4h, v3.4h}, [x21], #32
++    stp d0, d1, [x21], #16
++    stp d2, d3, [x21], #16
+     b conv_fmt_16bit_u_width_loop16
+ 
+ conv_fmt_16bit_u_width_loop4:
+@@ -805,7 +807,7 @@ conv_fmt_16bit_u_width_loop4:
+     ld1 {v0.8h}, [x15], #16
+     mov w9, w14                 // j += 4
+     xtn v0.4h, v0.4s
+-    st1 {v0.4h}, [x21], #8
++    str d0, [x21], #8
+     b conv_fmt_16bit_u_width_loop4
+ 
+ conv_fmt_16bit_u_width_loop1:
+@@ -842,7 +844,8 @@ conv_fmt_16bit_v_width_loop16:
+     xtn v1.4h, v1.4s
+     xtn v2.4h, v2.4s
+     xtn v3.4h, v3.4s
+-    st1 {v0.4h, v1.4h, v2.4h, v3.4h}, [x21], #32
++    stp d0, d1, [x21], #16
++    stp d2, d3, [x21], #16
+     b conv_fmt_16bit_v_width_loop16
+ 
+ conv_fmt_16bit_v_width_loop4:
+@@ -852,7 +855,7 @@ conv_fmt_16bit_v_width_loop4:
+     ld1 {v0.8h}, [x15], #16
+     mov w9, w14                 // j += 4
+     xtn v0.4h, v0.4s
+-    st1 {v0.4h}, [x21], #8
++    str d0, [x21], #8
+     b conv_fmt_16bit_v_width_loop4
+ 
+ conv_fmt_16bit_v_width_loop1:

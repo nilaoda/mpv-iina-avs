@@ -38,10 +38,9 @@ clang_supports_arm64_flag() {
   return 1
 }
 
-resolve_davs2_arm64_extra_cflags_default() {
-  local requested_mcpu="${DAVS2_APPLE_MCPU:-auto}"
+resolve_arm64_mcpu_flag() {
+  local requested_mcpu="${1:-auto}"
   local effective_mcpu=""
-  local -a flags=()
 
   case "$requested_mcpu" in
     auto)
@@ -60,6 +59,35 @@ resolve_davs2_arm64_extra_cflags_default() {
       ;;
   esac
 
+  printf '%s' "$effective_mcpu"
+}
+
+resolve_apple_silicon_extra_cflags_default() {
+  local requested_mcpu="${1:-${APPLE_SILICON_DISTRIBUTION_MCPU:-apple-m1}}"
+  local effective_mcpu=""
+  local -a flags=()
+
+  effective_mcpu="$(resolve_arm64_mcpu_flag "$requested_mcpu")"
+  if [[ -n "$effective_mcpu" ]]; then
+    flags+=("$effective_mcpu")
+  fi
+  flags+=("-fvectorize" "-fslp-vectorize")
+
+  join_by ' ' "${flags[@]}"
+}
+
+resolve_apple_silicon_extra_asmflags_default() {
+  local requested_mcpu="${1:-${APPLE_SILICON_DISTRIBUTION_MCPU:-apple-m1}}"
+
+  resolve_arm64_mcpu_flag "$requested_mcpu"
+}
+
+resolve_davs2_arm64_extra_cflags_default() {
+  local requested_mcpu="${DAVS2_APPLE_MCPU:-${APPLE_SILICON_DISTRIBUTION_MCPU:-apple-m1}}"
+  local effective_mcpu=""
+  local -a flags=()
+
+  effective_mcpu="$(resolve_arm64_mcpu_flag "$requested_mcpu")"
   if [[ -n "$effective_mcpu" ]]; then
     flags+=("$effective_mcpu")
   fi
@@ -104,6 +132,7 @@ AV3A_INSTALL_ROOT="$WORK_ROOT/av3a-install"
 AV3A_DECODER_SOURCE_DIR="$AV3A_SOURCE_DIR/av3adecoder"
 AV3A_RENDER_SOURCE_DIR="$AV3A_SOURCE_DIR/av3a_binaural_render/AudioDecoder/av3a_binaural_render"
 LOCAL_PATCH_ROOT="${LOCAL_PATCH_ROOT:-$SCRIPT_DIR/patches}"
+UAVS3D_PATCH_ROOT="${UAVS3D_PATCH_ROOT:-$LOCAL_PATCH_ROOT/uavs3d}"
 DAVS2_PATCH_PATH="$LOCAL_PATCH_ROOT/davs2-10bit/0001-enable-10bit-build-and-propagate-frame-packet-position.patch"
 DAVS2_ARM64_PATCH_PATH="$LOCAL_PATCH_ROOT/davs2-10bit/0002-enable-arm64-neon-detect-and-keep-vectorization.patch"
 DAVS2_ARM64_PRIMITIVES_PATCH_PATH="$LOCAL_PATCH_ROOT/davs2-10bit/0003-add-aarch64-neon-primitives-for-copy-add-avg.patch"
@@ -116,18 +145,37 @@ DAVS2_ARM64_INTRA_BILINEAR_PATCH_PATH="$LOCAL_PATCH_ROOT/davs2-10bit/0009-add-aa
 DAVS2_SEQ_DISPLAY_COLOR_PATCH_PATH="$LOCAL_PATCH_ROOT/davs2-10bit/0010-export-sequence-display-color-description.patch"
 DAVS2_ENABLE_EXPERIMENTAL_MC_INTERP="${DAVS2_ENABLE_EXPERIMENTAL_MC_INTERP:-1}"
 if [[ "$TARGET_ARCH" == "arm64" ]]; then
+  UAVS3D_EXTRA_CFLAGS_DEFAULT="$(resolve_apple_silicon_extra_cflags_default "${UAVS3D_APPLE_MCPU:-${APPLE_SILICON_DISTRIBUTION_MCPU:-apple-m1}}")"
+  UAVS3D_EXTRA_ASMFLAGS_DEFAULT="$(resolve_apple_silicon_extra_asmflags_default "${UAVS3D_APPLE_MCPU:-${APPLE_SILICON_DISTRIBUTION_MCPU:-apple-m1}}")"
+  FFMPEG_EXTRA_CFLAGS_DEFAULT="$(resolve_apple_silicon_extra_cflags_default "${FFMPEG_APPLE_MCPU:-${APPLE_SILICON_DISTRIBUTION_MCPU:-apple-m1}}")"
+  FFMPEG_EXTRA_CXXFLAGS_DEFAULT="$FFMPEG_EXTRA_CFLAGS_DEFAULT"
+  AV3A_EXTRA_CFLAGS_DEFAULT="$(resolve_apple_silicon_extra_cflags_default "${AV3A_APPLE_MCPU:-${APPLE_SILICON_DISTRIBUTION_MCPU:-apple-m1}}")"
+  AV3A_EXTRA_CXXFLAGS_DEFAULT="$(resolve_apple_silicon_extra_cflags_default "${AV3A_APPLE_MCPU:-${APPLE_SILICON_DISTRIBUTION_MCPU:-apple-m1}}")"
   DAVS2_EXTRA_CFLAGS_DEFAULT="$(resolve_davs2_arm64_extra_cflags_default)"
   DAVS2_EXTRA_LDFLAGS_DEFAULT="$(resolve_davs2_arm64_extra_ldflags_default)"
 else
+  UAVS3D_EXTRA_CFLAGS_DEFAULT=""
+  UAVS3D_EXTRA_ASMFLAGS_DEFAULT=""
+  FFMPEG_EXTRA_CFLAGS_DEFAULT=""
+  FFMPEG_EXTRA_CXXFLAGS_DEFAULT=""
+  AV3A_EXTRA_CFLAGS_DEFAULT=""
+  AV3A_EXTRA_CXXFLAGS_DEFAULT=""
   DAVS2_EXTRA_CFLAGS_DEFAULT=""
   DAVS2_EXTRA_LDFLAGS_DEFAULT=""
 fi
+UAVS3D_EFFECTIVE_EXTRA_CFLAGS="${UAVS3D_EXTRA_CFLAGS:-$UAVS3D_EXTRA_CFLAGS_DEFAULT}"
+UAVS3D_EFFECTIVE_EXTRA_ASMFLAGS="${UAVS3D_EXTRA_ASMFLAGS:-$UAVS3D_EXTRA_ASMFLAGS_DEFAULT}"
+FFMPEG_EFFECTIVE_EXTRA_CFLAGS="${FFMPEG_EXTRA_CFLAGS:-$FFMPEG_EXTRA_CFLAGS_DEFAULT}"
+FFMPEG_EFFECTIVE_EXTRA_CXXFLAGS="${FFMPEG_EXTRA_CXXFLAGS:-$FFMPEG_EXTRA_CXXFLAGS_DEFAULT}"
+AV3A_EFFECTIVE_EXTRA_CFLAGS="${AV3A_EXTRA_CFLAGS:-$AV3A_EXTRA_CFLAGS_DEFAULT}"
+AV3A_EFFECTIVE_EXTRA_CXXFLAGS="${AV3A_EXTRA_CXXFLAGS:-$AV3A_EXTRA_CXXFLAGS_DEFAULT}"
 DAVS2_EFFECTIVE_EXTRA_CFLAGS="${DAVS2_EXTRA_CFLAGS:-$DAVS2_EXTRA_CFLAGS_DEFAULT}"
 DAVS2_EFFECTIVE_EXTRA_LDFLAGS="${DAVS2_EXTRA_LDFLAGS:-$DAVS2_EXTRA_LDFLAGS_DEFAULT}"
 FFMPEG_DAVS2_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0001-libdavs2-export-pkt_pos-from-decoder-output.patch"
 FFMPEG_DAVS2_COLOR_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0004-libdavs2-export-sequence-display-color-metadata.patch"
 FFMPEG_AV3A_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0005-libarcdav3a-add-av3a-audio-vivid-decoder.patch"
 FFMPEG_AV3A_FORMAT_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0006-av3a-container-parser-demux.patch"
+FFMPEG_UAVS3D_APPLE_THREADS_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0007-libuavs3d-tune-apple-silicon-auto-threads.patch"
 FFMPEG_CAVS_DRA_MACOS_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0002-libcavs-fix-macos-build-compat.patch"
 FFMPEG_CAVS_DRA_FIELD_ORDER_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0003-libcavs-preserve-field-order-and-output-flags.patch"
 DEFAULT_CAVS_DRA_PATCH_PATH="${DEFAULT_CAVS_DRA_PATCH_PATH:-}"
@@ -157,14 +205,32 @@ mkdir -p "$FFMPEG_PREFIX" "$UAVS3D_INSTALL_ROOT" "$AV3A_INSTALL_ROOT"
 
 log "Building libuavs3d"
 fetch_git_ref "$UAVS3D_GIT_URL" "$UAVS3D_GIT_REF" "$UAVS3D_SOURCE_DIR"
+if [[ -d "$UAVS3D_PATCH_ROOT" ]]; then
+  while IFS= read -r patch_path; do
+    log "Applying uavs3d $(basename "$patch_path")"
+    if ! git -C "$UAVS3D_SOURCE_DIR" apply "$patch_path"; then
+      patch -d "$UAVS3D_SOURCE_DIR" -p1 -l < "$patch_path"
+    fi
+  done < <(find "$UAVS3D_PATCH_ROOT" -maxdepth 1 -type f -name '*.patch' | sort)
+fi
+uavs3d_cmake_args=(
+  -DCMAKE_BUILD_TYPE=Release
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+  -DCMAKE_INSTALL_PREFIX="$UAVS3D_INSTALL_ROOT"
+  -DBUILD_SHARED_LIBS=OFF
+  -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+  -DCOMPILE_10BIT=1
+)
+if [[ -n "$UAVS3D_EFFECTIVE_EXTRA_CFLAGS" ]]; then
+  uavs3d_cmake_args+=("-DCMAKE_C_FLAGS_RELEASE=-O3 -DNDEBUG $UAVS3D_EFFECTIVE_EXTRA_CFLAGS")
+  uavs3d_cmake_args+=("-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG $UAVS3D_EFFECTIVE_EXTRA_CFLAGS")
+fi
+if [[ -n "$UAVS3D_EFFECTIVE_EXTRA_ASMFLAGS" ]]; then
+  uavs3d_cmake_args+=("-DCMAKE_ASM_FLAGS_RELEASE=$UAVS3D_EFFECTIVE_EXTRA_ASMFLAGS")
+fi
 cmake -S "$UAVS3D_SOURCE_DIR" \
   -B "$UAVS3D_BUILD_DIR" \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-  -DCMAKE_INSTALL_PREFIX="$UAVS3D_INSTALL_ROOT" \
-  -DBUILD_SHARED_LIBS=OFF \
-  -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-  -DCOMPILE_10BIT=1
+  "${uavs3d_cmake_args[@]}"
 cmake --build "$UAVS3D_BUILD_DIR" -j"$CPU_COUNT"
 cmake --install "$UAVS3D_BUILD_DIR"
 
@@ -205,6 +271,7 @@ log "Building AVS3 audio decoder (libAVS3AudioDec)"
 AV3A_DECODER_BUILD_DIR="$AV3A_BUILD_ROOT/avs3decoder"
 mkdir -p "$AV3A_DECODER_BUILD_DIR" "$AV3A_INSTALL_ROOT/lib"
 av3a_decoder_cflags=(-O3 -fPIC -std=c99 -Dmain=avs3_decoder_main)
+append_flags_from_env AV3A_EFFECTIVE_EXTRA_CFLAGS av3a_decoder_cflags
 if [[ "$TARGET_ARCH" == "arm64" ]]; then
   av3a_decoder_cflags+=(-DARCH_AARCH64 -DSUPPORT_NEON -fsigned-char)
 fi
@@ -240,6 +307,8 @@ AV3A_RENDER_BUILD_DIR="$AV3A_BUILD_ROOT/av3a-render"
 mkdir -p "$AV3A_RENDER_BUILD_DIR"
 av3a_render_cflags=(-O3 -fPIC -DHAVE_CONFIG_H)
 av3a_render_cxxflags=(-O3 -fPIC -std=c++11 -DHAVE_CONFIG_H)
+append_flags_from_env AV3A_EFFECTIVE_EXTRA_CFLAGS av3a_render_cflags
+append_flags_from_env AV3A_EFFECTIVE_EXTRA_CXXFLAGS av3a_render_cxxflags
 av3a_render_includes=(
   "-I$AV3A_RENDER_SOURCE_DIR"
   "-I$AV3A_RENDER_SOURCE_DIR/ext/pffft"
@@ -376,6 +445,15 @@ PC
 fi
 
 log "Applying FFmpeg compatibility patches"
+if [[ ! -f "$FFMPEG_UAVS3D_APPLE_THREADS_PATCH_PATH" ]]; then
+  echo "Missing FFmpeg uavs3d Apple Silicon threads patch file: $FFMPEG_UAVS3D_APPLE_THREADS_PATCH_PATH" >&2
+  exit 1
+fi
+if ! patch -d "$SOURCE_DIR" -p1 --batch --forward -N -l < "$FFMPEG_UAVS3D_APPLE_THREADS_PATCH_PATH"; then
+  echo "Failed to apply FFmpeg uavs3d Apple Silicon threads patch: $FFMPEG_UAVS3D_APPLE_THREADS_PATCH_PATH" >&2
+  exit 1
+fi
+
 if [[ "$ENABLE_LIBDAVS2" == true ]]; then
   ffmpeg_davs2_patch_paths=(
     "$FFMPEG_DAVS2_PATCH_PATH"
@@ -526,6 +604,12 @@ fi
 if [[ "$ENABLE_LIBDAVS2" == true ]]; then
   CONFIGURE_FLAGS+=(--enable-libdavs2)
 fi
+if [[ -n "$FFMPEG_EFFECTIVE_EXTRA_CFLAGS" ]]; then
+  CONFIGURE_FLAGS+=(--extra-cflags="$FFMPEG_EFFECTIVE_EXTRA_CFLAGS")
+fi
+if [[ -n "$FFMPEG_EFFECTIVE_EXTRA_CXXFLAGS" ]]; then
+  CONFIGURE_FLAGS+=(--extra-cxxflags="$FFMPEG_EFFECTIVE_EXTRA_CXXFLAGS")
+fi
 
 if ! ./configure "${CONFIGURE_FLAGS[@]}"; then
   if [[ -f ffbuild/config.log ]]; then
@@ -551,7 +635,14 @@ FFmpeg prefix: $FFMPEG_PREFIX
 Patch root: $LOCAL_PATCH_ROOT
 Davs2 configure host: $DAVS2_CONFIGURE_HOST
 Davs2 thinlto enabled: ${DAVS2_ENABLE_THINLTO:-0}
-Davs2 applemcpu override: ${DAVS2_APPLE_MCPU:-auto}
+Davs2 applemcpu override: ${DAVS2_APPLE_MCPU:-${APPLE_SILICON_DISTRIBUTION_MCPU:-apple-m1}}
+Apple Silicon distribution mcpu: ${APPLE_SILICON_DISTRIBUTION_MCPU:-apple-m1}
+Uavs3d extra cflags: ${UAVS3D_EFFECTIVE_EXTRA_CFLAGS:-<none>}
+Uavs3d extra asmflags: ${UAVS3D_EFFECTIVE_EXTRA_ASMFLAGS:-<none>}
+FFmpeg extra cflags: ${FFMPEG_EFFECTIVE_EXTRA_CFLAGS:-<none>}
+FFmpeg extra cxxflags: ${FFMPEG_EFFECTIVE_EXTRA_CXXFLAGS:-<none>}
+AV3A extra cflags: ${AV3A_EFFECTIVE_EXTRA_CFLAGS:-<none>}
+AV3A extra cxxflags: ${AV3A_EFFECTIVE_EXTRA_CXXFLAGS:-<none>}
 Davs2 extra cflags: ${DAVS2_EFFECTIVE_EXTRA_CFLAGS:-<none>}
 Davs2 extra ldflags: ${DAVS2_EFFECTIVE_EXTRA_LDFLAGS:-<none>}
 AV3A git url: ${AV3A_GIT_URL:-<none>}
