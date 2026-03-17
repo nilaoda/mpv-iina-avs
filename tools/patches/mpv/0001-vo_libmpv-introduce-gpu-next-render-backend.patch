@@ -1283,6 +1283,7 @@ index 0000000000000..bb2e15eef39f6
 +++ b/video/out/gpu_next/video.c
 @@ -0,0 +1,762 @@
 +#include "video.h"
++#include <libavutil/buffer.h>              // for AVBufferRef
 +#include <libplacebo/utils/frame_queue.h>  // for pl_source_frame, pl_queue_...
 +#include <stddef.h>                        // for NULL
 +#include <stdint.h>                        // for uint64_t, uint32_t, uintptr_t
@@ -1306,11 +1307,13 @@ index 0000000000000..bb2e15eef39f6
 +#include "video/img_format.h"              // for mp_imgfmt
 +#include "video/mp_image.h"                // for mp_image, mp_image_params
 +#include "video/out/gpu_next/ra.h"         // for ra_next_find_fmt, ra_next_...
++#include "video/out/opengl/gl_headers.h"   // for GL_R8, GL_RG, GL_R16, ...
 +#include "video/out/vo.h"                  // for vo_frame
 +#if HAVE_GL && defined(PL_HAVE_OPENGL) && (HAVE_VIDEOTOOLBOX_GL || HAVE_IOS_GL)
 +#include <CoreVideo/CoreVideo.h>
 +#include <IOSurface/IOSurface.h>
 +#include <OpenGL/OpenGL.h>
++#include <OpenGL/gl3.h>
 +#include <OpenGL/CGLIOSurface.h>
 +#endif
 +
@@ -1444,7 +1447,9 @@ index 0000000000000..bb2e15eef39f6
 +        *out_type = GL_UNSIGNED_BYTE;
 +        return true;
 +    case IMGFMT_P010:
++#ifdef IMGFMT_P016
 +    case IMGFMT_P016:
++#endif
 +        *out_iformat = plane == 0 ? GL_R16 : GL_RG16;
 +        *out_format = plane == 0 ? GL_RED : GL_RG;
 +        *out_type = GL_UNSIGNED_SHORT;
@@ -1465,7 +1470,9 @@ index 0000000000000..bb2e15eef39f6
 +    switch (mpi->params.hw_subfmt) {
 +    case IMGFMT_NV12:
 +    case IMGFMT_P010:
++#ifdef IMGFMT_P016
 +    case IMGFMT_P016:
++#endif
 +        return true;
 +    default:
 +        return false;
