@@ -561,6 +561,7 @@ CONFIGURE_FLAGS=(
   --disable-debug
   --enable-pic
   --enable-videotoolbox
+  --enable-vulkan
   --enable-audiotoolbox
   --enable-neon
   --enable-sdl2
@@ -569,6 +570,7 @@ CONFIGURE_FLAGS=(
 if [[ "$LICENSE_FLAVOR" == "gpl" ]]; then
   CONFIGURE_FLAGS+=(--enable-gpl --enable-version3)
 fi
+CONFIGURE_FLAGS+=(--enable-libplacebo)
 CONFIGURE_FLAGS+=(--enable-libdav1d)
 CONFIGURE_FLAGS+=(--enable-libuavs3d)
 if [[ "$ENABLE_LIBARCDAV3A" == true ]]; then
