@@ -164,12 +164,17 @@ index b4bfa9d643a9a..84f4b303b2746 100644
 +static int libmpv_gpu_next_init_gl(struct libmpv_gpu_next_context *ctx, mpv_render_param *params)
 +{
 +    ctx->priv = talloc_zero(NULL, struct priv);
++    if (!ctx->priv)
++        return MPV_ERROR_NOMEM;
 +    struct priv *p = ctx->priv;
 +
 +    mpv_opengl_init_params *gl_params =
 +    get_mpv_render_param(params, MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, NULL);
-+    if (!gl_params || !gl_params->get_proc_address)
++    if (!gl_params || !gl_params->get_proc_address) {
++        talloc_free(ctx->priv);
++        ctx->priv = NULL;
 +        return MPV_ERROR_INVALID_PARAMETER;
++    }
 +
 +    // Make a persistent copy of the params struct's contents.
 +    p->gl_params = *gl_params;
@@ -186,6 +191,11 @@ index b4bfa9d643a9a..84f4b303b2746 100644
 +    }
 +
 +    p->pl_log = pl_log_create(PL_API_VER, &log_params);
++    if (!p->pl_log) {
++        talloc_free(ctx->priv);
++        ctx->priv = NULL;
++        return MPV_ERROR_NOMEM;
++    }
 +    p->gl = pl_opengl_create(p->pl_log, pl_opengl_params(
 +        .get_proc_addr_ex = (pl_voidfunc_t (*)(void*, const char*))gl_params->get_proc_address,
 +        .proc_ctx = gl_params->get_proc_address_ctx,
@@ -197,6 +207,8 @@ index b4bfa9d643a9a..84f4b303b2746 100644
 +    if (!p->gl) {
 +        MP_ERR(ctx, "Failed to create libplacebo OpenGL context.\n");
 +        pl_log_destroy(&p->pl_log);
++        talloc_free(ctx->priv);
++        ctx->priv = NULL;
 +        return MPV_ERROR_UNSUPPORTED;
 +    }
 +    p->gpu = p->gl->gpu;
@@ -206,6 +218,8 @@ index b4bfa9d643a9a..84f4b303b2746 100644
 +    if (!p->ra) {
 +        pl_opengl_destroy(&p->gl);
 +        pl_log_destroy(&p->pl_log);
++        talloc_free(ctx->priv);
++        ctx->priv = NULL;
 +        return MPV_ERROR_VO_INIT_FAILED;
 +    }
 +
@@ -275,6 +289,8 @@ index b4bfa9d643a9a..84f4b303b2746 100644
 +
 +    pl_opengl_destroy(&p->gl);
 +    pl_log_destroy(&p->pl_log);
++    talloc_free(p);
++    ctx->priv = NULL;
 +}
 +
 +/**
@@ -377,6 +393,8 @@ index 0000000000000..31c0cb50bc986
 +static int init(struct render_backend *ctx, mpv_render_param *params)
 +{
 +    ctx->priv = talloc_zero(NULL, struct priv);
++    if (!ctx->priv)
++        return MPV_ERROR_NOMEM;
 +    struct priv *p = ctx->priv;
 +
 +    // Get the API type from the render parameters.
@@ -392,11 +410,11 @@ index 0000000000000..31c0cb50bc986
 +        const struct libmpv_gpu_next_context_fns *backend = context_backends[n];
 +        if (strcmp(backend->api_name, api) == 0) {
 +            p->context = talloc_zero(p, struct libmpv_gpu_next_context);
-+            *p->context = (struct libmpv_gpu_next_context){
-+                .global = ctx->global,
-+                .log = mp_log_new(p, ctx->log, "gpu-next-ctx"),
-+                .fns = backend,
-+            };
++            if (!p->context)
++                return MPV_ERROR_NOMEM;
++            p->context->global = ctx->global;
++            p->context->log = mp_log_new(p, ctx->log, "gpu-next-ctx");
++            p->context->fns = backend;
 +            break;
 +        }
 +    }
@@ -479,7 +497,9 @@ index 0000000000000..31c0cb50bc986
 +                  struct vo_frame *frame)
 +{
 +    struct priv *p = ctx->priv;
-+    if (!p->video_engine) return MPV_ERROR_UNINITIALIZED;
++    if (!p || !p->video_engine || !p->context || !p->context->fns ||
++        !p->context->ra)
++        return MPV_ERROR_UNINITIALIZED;
 +
 +    // Wrap the framebuffer object (FBO) for rendering.
 +    pl_tex target_tex = NULL;
@@ -575,7 +595,8 @@ index 0000000000000..31c0cb50bc986
 +static int get_target_size(struct render_backend *ctx, mpv_render_param *params, int *out_w, int *out_h)
 +{
 +    struct priv *p = ctx->priv;
-+    if (!p->context || !p->context->fns || !p->context->ra) return MPV_ERROR_UNINITIALIZED;
++    if (!p || !p->context || !p->context->fns || !p->context->ra)
++        return MPV_ERROR_UNINITIALIZED;
 +    pl_tex tex = NULL;
 +    int err = p->context->fns->wrap_fbo(p->context, params, &tex);
 +    if (err < 0) return err;
@@ -1260,7 +1281,7 @@ new file mode 100644
 index 0000000000000..bb2e15eef39f6
 --- /dev/null
 +++ b/video/out/gpu_next/video.c
-+@@ -0,0 +1,731 @@
+@@ -0,0 +1,762 @@
 +#include "video.h"
 +#include <libplacebo/utils/frame_queue.h>  // for pl_source_frame, pl_queue_...
 +#include <stddef.h>                        // for NULL
@@ -1581,9 +1602,11 @@ index 0000000000000..bb2e15eef39f6
 +static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src,
 +                      struct pl_frame *frame)
 +{
-+    struct mp_image *mpi = src->frame_data;
-+    struct frame_priv *fp = mpi->priv;
-+    struct pl_video *p = fp->p;
++    struct mp_image *mpi = src ? src->frame_data : NULL;
++    struct frame_priv *fp = mpi ? mpi->priv : NULL;
++    struct pl_video *p = fp ? fp->p : NULL;
++    if (!mpi || !fp || !p)
++        return false;
 +
 +#if HAVE_GL && defined(PL_HAVE_OPENGL) && (HAVE_VIDEOTOOLBOX_GL || HAVE_IOS_GL)
 +    if (map_videotoolbox_frame(p, mpi, frame, fp->vt_textures,
@@ -1624,9 +1647,11 @@ index 0000000000000..bb2e15eef39f6
 +static void unmap_frame(pl_gpu gpu, struct pl_frame *frame,
 +                        const struct pl_source_frame *src)
 +{
-+    struct mp_image *mpi = src->frame_data;
-+    struct frame_priv *fp = mpi->priv;
-+    struct pl_video *p = fp->p;
++    struct mp_image *mpi = src ? src->frame_data : NULL;
++    struct frame_priv *fp = mpi ? mpi->priv : NULL;
++    struct pl_video *p = fp ? fp->p : NULL;
++    if (!mpi || !fp || !p)
++        return;
 +
 +    // Use the RA helper to destroy the GPU textures associated with the frame.
 +#if HAVE_GL && defined(PL_HAVE_OPENGL) && (HAVE_VIDEOTOOLBOX_GL || HAVE_IOS_GL)
@@ -1665,9 +1690,19 @@ index 0000000000000..bb2e15eef39f6
 + */
 +struct pl_video *pl_video_init(struct mpv_global *global, struct mp_log *log, struct ra_next *ra) {
 +    struct pl_video *p = talloc_zero(NULL, struct pl_video);
++    if (!p)
++        return NULL;
 +    p->log = log;
 +    p->ra = ra;
++    if (!p->ra) {
++        talloc_free(p);
++        return NULL;
++    }
 +    p->queue = ra_next_queue_create(ra);
++    if (!p->queue) {
++        talloc_free(p);
++        return NULL;
++    }
 +
 +    // Pre-find the texture formats we'll need for OSD bitmaps for efficiency.
 +    p->osd_fmt[SUBBITMAP_LIBASS] = ra_next_find_fmt(p->ra, PL_FMT_UNORM, 1, 8, 8, 0);
@@ -1675,6 +1710,11 @@ index 0000000000000..bb2e15eef39f6
 +
 +    // Create the state object that tracks brightness, contrast, etc.
 +    p->video_eq = mp_csp_equalizer_create(p, global);
++    if (!p->video_eq) {
++        ra_next_queue_destroy(&p->queue);
++        talloc_free(p);
++        return NULL;
++    }
 +
 +    return p;
 +}
@@ -1826,6 +1866,8 @@ index 0000000000000..bb2e15eef39f6
 +void pl_video_render(struct pl_video *p, struct vo_frame *frame, pl_tex target_tex,
 +                     bool target_flip)
 +{
++    if (!p || !p->ra || !p->queue || !target_tex)
++        return;
 +    // Describe the target surface for libplacebo.
 +    struct pl_frame target_frame = {
 +        .num_planes = 1,
@@ -1844,8 +1886,17 @@ index 0000000000000..bb2e15eef39f6
 +    // We check the frame_id to avoid pushing duplicates.
 +    if (frame && frame->current && frame->frame_id > p->last_frame_id) {
 +        struct mp_image *mpi = mp_image_new_ref(frame->current);
++        if (!mpi) {
++            mp_msg(p->log, MSGL_ERR, "Failed to reference current frame.\n");
++            return;
++        }
 +        // Attach our private data to the image for the callbacks.
 +        struct frame_priv *fp = talloc_zero(mpi, struct frame_priv);
++        if (!fp) {
++            mp_msg(p->log, MSGL_ERR, "Failed to allocate frame state.\n");
++            talloc_free(mpi);
++            return;
++        }
 +        fp->p = p;
 +        mpi->priv = fp;
 +
@@ -1937,7 +1988,8 @@ index 0000000000000..bb2e15eef39f6
 +struct mp_image *pl_video_screenshot(struct pl_video *p, struct vo_frame *frame)
 +{
 +    if (!p || !p->ra || !frame || !frame->current) {
-+        mp_msg(p->log, MSGL_WARN, "pl_video_screenshot: invalid arguments\n");
++        if (p && p->log)
++            mp_msg(p->log, MSGL_WARN, "pl_video_screenshot: invalid arguments\n");
 +        return NULL;
 +    }
 +
