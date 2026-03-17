@@ -7,7 +7,7 @@ This repository maintains its own patch stack. The current approach is:
 Disclaimer: Portions of the decoder source code were obtained from publicly available sources and are included solely for research and educational purposes. They are not licensed for commercial use. If you believe any content infringes your rights, please contact me and I will remove it promptly.
 AV3A demuxer/parser/container handling draws from [openharmony/third_party_ffmpeg](https://github.com/openharmony/third_party_ffmpeg).
 
-- keep using `ffmpeg-7.1.2_cavs_dra.patch` from `maliwen2015/ffmpeg_cavs_dra` as the base AVS / AVS+ / DRA enablement patch
+- maintain a vendored `FFmpeg 8.0.1` base patch adapted from the original `maliwen2015/ffmpeg_cavs_dra` source patch
 - vendor only the additional fixes that are actually needed here under `tools/patches`
 - produce two separate outputs:
   - a dylib bundle for IINA / `libmpv`
@@ -25,6 +25,7 @@ AV3A demuxer/parser/container handling draws from [openharmony/third_party_ffmpe
   - packages a directly testable FFmpeg CLI bundle
 - `tools/build_mpv_macos.sh`
   - builds mpv / `libmpv` against the patched FFmpeg prefix
+  - applies local `tools/patches/mpv/*.patch` compatibility fixes before configuring mpv
 - `tools/package_iina_bundle_macos.sh`
   - packages the `libmpv` + FFmpeg dylib set for IINA
 - `tools/build_all_macos.sh`
@@ -38,6 +39,9 @@ AV3A demuxer/parser/container handling draws from [openharmony/third_party_ffmpe
 - `tools/patches/davs2-10bit/*.patch`
   - vendored `davs2-10bit` patches maintained in this repository, including Apple Silicon AArch64 NEON optimizations for 10-bit decode hot paths
 - `tools/patches/ffmpeg/*.patch`
+  - vendored FFmpeg patch stack maintained in this repository for `FFmpeg 8.0.1`
+- `tools/patches/mpv/*.patch`
+  - vendored mpv compatibility patches maintained in this repository for the selected FFmpeg / mpv combination
   - vendored FFmpeg-side patches maintained in this repository
 
 ## Build flow
@@ -52,12 +56,12 @@ Run:
 
 This script:
 
-- downloads and extracts `ffmpeg-7.1.3`
+- downloads and extracts `ffmpeg-8.0.1`
 - fetches and builds static `uavs3d`
 - builds static AV3A decoder + binaural renderer from the local `Sourcecodeforplayer` checkout (see `AV3A_SOURCE_ROOT`)
 - fetches and builds static `davs2-10bit` when `LICENSE_FLAVOR=gpl`
 - applies the vendored local patches
-- applies `ffmpeg_cavs_dra.patch` as the base AVS / AVS+ / DRA support patch
+- applies the vendored local FFmpeg patch stack, including the locally maintained AVS / AVS+ / DRA base patch derived from `maliwen2015/ffmpeg_cavs_dra`
 - installs a shared-library FFmpeg prefix for later mpv / IINA builds
 
 Default outputs:
@@ -103,6 +107,7 @@ Run:
 ```
 
 This script links mpv against the patched FFmpeg prefix from the previous step and installs it into a separate mpv prefix.
+It also applies the local mpv patch stack used to keep `mpv v0.40.0` building cleanly against `FFmpeg 8.0.1` (for example, the ARIB caption profile macro rename from `FF_PROFILE_*` to `AV_PROFILE_*`).
 
 Default output:
 
@@ -146,10 +151,12 @@ Execution order:
 
 ### Base patch
 
-- `ffmpeg_cavs_dra.patch`
-  - source: `https://github.com/maliwen2015/ffmpeg_cavs_dra`
-  - purpose: provides the base AVS / AVS+ / DRA support for FFmpeg 7.1.x
-  - this repository does not vendor that large patch directly; by default `tools/build_ffmpeg_prefix_macos.sh` fetches it during the build, but `DEFAULT_CAVS_DRA_PATCH_PATH` can point to a relative local copy instead
+- `tools/patches/ffmpeg/0002-libcavs-add-avs-avsplus-dra-base.patch`
+  - original source: `https://github.com/maliwen2015/ffmpeg_cavs_dra`
+  - purpose: vendors the base AVS / AVS+ / DRA enablement patch stack directly in this repository
+  - note: the patch is adapted and maintained locally for `FFmpeg 8.0.1`, so the build no longer fetches `ffmpeg_cavs_dra.patch` during execution
+  - includes the macOS build-compat fixes and the AVS+ field-order / output-flag preservation work that previously lived in separate follow-up patches
+  - keeps the imported `libcavs` / `libdradec` code path usable on current Apple clang while preserving interlaced-output metadata handling
 
 ### Vendored local patches
 
@@ -195,28 +202,6 @@ Execution order:
   - makes `davs2-10bit` parse AVS2 `sequence_display_extension` metadata and export the basic display / color-description fields through its public sequence-header output
   - propagates `sample_range`, `colour_primaries`, `transfer_characteristics`, and `matrix_coefficients` so FFmpeg can tag decoded AVS2 frames correctly
 
-- `tools/patches/ffmpeg/0001-libdavs2-export-pkt_pos-from-decoder-output.patch`
-  - makes FFmpeg's `libdavs2` wrapper export decoder output packet-position data onto `AVFrame`
-  - keeps frame-origin metadata available for debugging and higher-level inspection
-
-- `tools/patches/ffmpeg/0002-libcavs-fix-macos-build-compat.patch`
-  - fixes `libcavs` build compatibility issues on macOS / Apple clang
-  - makes the upstream `ffmpeg_cavs_dra.patch` apply cleanly and build reliably in the current macOS toolchain
-
-- `tools/patches/ffmpeg/0003-libcavs-preserve-field-order-and-output-flags.patch`
-  - fixes AVS+ interlaced output metadata handling when field order and interlaced flags were being overwritten or lost during decode output
-  - incorporates timestamp + frame-type handling inspired by [llawsxx/FFmpeg](https://github.com/llawsxx/FFmpeg)
-  - specifically:
-    - stops incorrectly overwriting `b_top_field_first`
-    - records per-output-frame `interlaced` / `top_field_first` state on the `libcavs` output path
-    - sets `AV_FRAME_FLAG_INTERLACED` and `AV_FRAME_FLAG_TOP_FIELD_FIRST` correctly in `libcavsdec`
-    - uses the delayed frame's own picture structure when outputting delayed frames
-    - propagates per-frame `pts` / `dts` from `libcavs` into `AVFrame`
-    - sets `AV_FRAME_FLAG_KEY` and `AVFrame.pict_type` based on the actual output frame type
-    - keeps delayed output frames' timestamps and picture types consistent with the frame being emitted
-    - resets the libcavs pipeline state on decoder flush to avoid stale frame metadata
-  - fixes the playback issue where some 1080i AVS+ samples would stutter, oscillate, or deinterlace incorrectly
-
 - `tools/patches/ffmpeg/0004-libdavs2-export-sequence-display-color-metadata.patch`
   - makes FFmpeg's `libdavs2` wrapper consume the additional AVS2 sequence-display metadata exported by the local `davs2-10bit` patch stack
   - maps AVS2 range / primaries / transfer / matrix values onto FFmpeg `AVCodecContext` and `AVFrame` color fields
@@ -231,6 +216,10 @@ Execution order:
 - `tools/patches/ffmpeg/0007-libuavs3d-tune-apple-silicon-auto-threads.patch`
   - tunes FFmpeg's `libuavs3d` wrapper thread selection for Apple Silicon so the default auto-thread path does not underutilize the decoder
   - improves the out-of-box AVS3 decode throughput of the distributed build without requiring end users to pass manual `-threads` overrides
+
+- `tools/patches/mpv/0001-ffmpeg-8-arib-caption-profile-macros.patch`
+  - updates `mpv v0.40.0` ARIB caption profile references from the removed `FF_PROFILE_*` names to `FFmpeg 8.0.1`'s `AV_PROFILE_*` names
+  - keeps the bundled mpv build compatible with the FFmpeg 8 migration without requiring an mpv version bump
 
 - `tools/patches/uavs3d/0001-arm64-neon-accelerate-10bit-output-conversion.patch`
   - adds an AArch64 NEON fast path for the 10-bit output conversion stage in `uavs3d`
@@ -277,20 +266,18 @@ Defined in `tools/common.sh`:
 
 - `WORK_ROOT=.work`
 - `ARTIFACT_ROOT=artifacts`
-- `FFMPEG_VERSION=7.1.3`
+- `FFMPEG_VERSION=8.0.1`
 - `MPV_REF=v0.40.0`
 - `LICENSE_FLAVOR=gpl`
 - `TARGET_ARCH=arm64`
 - `FFMPEG_PREFIX=$WORK_ROOT/ffmpeg-prefix`
 - `MPV_PREFIX=$WORK_ROOT/mpv-prefix`
-- `SOURCE_ROOT=$WORK_ROOT/src`
+- `SOURCE_ROOT=.work/src`
 
 Useful overrides:
 
 - `LOCAL_PATCH_ROOT`
   - overrides the vendored patch root; default is `tools/patches`
-- `DEFAULT_CAVS_DRA_PATCH_PATH`
-  - points to a local `ffmpeg_cavs_dra.patch`; if unset, the script fetches it from the upstream repository
 - `AV3A_GIT_URL` / `AV3A_GIT_REF`
   - git source for AV3A; defaults to `https://github.com/nilaoda/Sourcecodeforplayer`
   - default ref: `e7d244d29454eb04c968cd98a30587303a9c15f8`
@@ -307,9 +294,9 @@ By default, artifacts are written to `artifacts`
 
 Common outputs include:
 
-- `ffmpeg-cli-bundle-macos-arm64-gpl-ffmpeg-7.1.3.zip`
+- `ffmpeg-cli-bundle-macos-arm64-gpl-ffmpeg-8.0.1.zip`
   - CLI test bundle for direct AVS+ / AVS2 decoder and filter validation
-- `iina-mpv-bundle-macos-arm64-gpl-ffmpeg-7.1.3-mpv-v0.40.0.zip`
+- `iina-mpv-bundle-macos-arm64-gpl-ffmpeg-8.0.1-mpv-v0.40.0.zip`
   - dylib bundle for IINA / `deps/lib`
 - `ffmpeg-cli-bundle-manifest.txt`
   - dependency report for the CLI bundle

@@ -9,8 +9,8 @@ diff --git a/libavcodec/libdavs2.c b/libavcodec/libdavs2.c
  #include "libavutil/cpu.h"
  #include "avcodec.h"
  #include "codec_internal.h"
-@@ -42,6 +43,76 @@
-     int64_t last_packet_pos;
+@@ -40,6 +41,76 @@
+ 
  }DAVS2Context;
  
 +static const int ff_avs2_color_primaries_tab[10] = {
@@ -94,10 +94,10 @@ diff --git a/libavcodec/libdavs2.c b/libavcodec/libdavs2.c
          *got_frame = 0;
          return 0;
      }
-@@ -165,6 +237,7 @@
-     frame->pts       = davs2_resolve_output_pts(avctx, cad, pic);
+@@ -134,6 +206,7 @@
+     frame->height    = cad->headerset.height;
+     frame->pts       = cad->out_frame.pts;
      frame->format    = avctx->pix_fmt;
-     frame->pkt_pos   = cad->out_frame.pos;
 +    davs2_set_color_metadata(avctx, frame, headerset);
  
      *got_frame = 1;

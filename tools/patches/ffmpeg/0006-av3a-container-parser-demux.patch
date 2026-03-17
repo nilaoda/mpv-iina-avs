@@ -1,8 +1,8 @@
 diff --git a/libavcodec/Makefile b/libavcodec/Makefile
-index 153a9e3..03c3381 100644
+index c8fc51f..ca0d166 100644
 --- a/libavcodec/Makefile
 +++ b/libavcodec/Makefile
-@@ -1184,6 +1184,7 @@ OBJS-$(CONFIG_AMR_PARSER)              += amr_parser.o
+@@ -1219,6 +1219,7 @@ OBJS-$(CONFIG_APV_PARSER)              += apv_parser.o
  OBJS-$(CONFIG_AV1_PARSER)              += av1_parser.o av1_parse.o
  OBJS-$(CONFIG_AVS2_PARSER)             += avs2.o avs2_parser.o
  OBJS-$(CONFIG_AVS3_PARSER)             += avs3_parser.o
@@ -365,7 +365,7 @@ index 0000000..fd7f886
 +#endif /* AVCODEC_AV3A_H */
 diff --git a/libavcodec/av3a_parser.c b/libavcodec/av3a_parser.c
 new file mode 100644
-index 0000000..0000000
+index 0000000..43d61af
 --- /dev/null
 +++ b/libavcodec/av3a_parser.c
 @@ -0,0 +1,276 @@
@@ -645,12 +645,11 @@ index 0000000..0000000
 +    .parser_parse = raw_av3a_parse,
 +    .parser_close = ff_parse_close,
 +};
-
 diff --git a/libavcodec/parsers.c b/libavcodec/parsers.c
-index 5128009..ad49461 100644
+index b12c48f..f303ecc 100644
 --- a/libavcodec/parsers.c
 +++ b/libavcodec/parsers.c
-@@ -28,6 +28,7 @@ extern const AVCodecParser ff_amr_parser;
+@@ -29,6 +29,7 @@ extern const AVCodecParser ff_apv_parser;
  extern const AVCodecParser ff_av1_parser;
  extern const AVCodecParser ff_avs2_parser;
  extern const AVCodecParser ff_avs3_parser;
@@ -659,11 +658,10 @@ index 5128009..ad49461 100644
  extern const AVCodecParser ff_cavsvideo_parser;
  extern const AVCodecParser ff_cook_parser;
 diff --git a/libavformat/Makefile b/libavformat/Makefile
-index 7ca68a7..d14ceda 100644
+index f553e88..9379395 100644
 --- a/libavformat/Makefile
 +++ b/libavformat/Makefile
-@@ -145,7 +145,8 @@
- OBJS-$(CONFIG_AVS2_MUXER)                += rawenc.o
+@@ -150,6 +150,7 @@ OBJS-$(CONFIG_AVS2_MUXER)                += rawenc.o
  OBJS-$(CONFIG_AVS3_DEMUXER)              += avs3dec.o rawdec.o
  OBJS-$(CONFIG_AVS3_MUXER)                += rawenc.o
  OBJS-$(CONFIG_AV3A_MUXER)                += rawenc.o
@@ -672,11 +670,10 @@ index 7ca68a7..d14ceda 100644
  OBJS-$(CONFIG_BFI_DEMUXER)               += bfi.o
  OBJS-$(CONFIG_BINK_DEMUXER)              += bink.o
 diff --git a/libavformat/allformats.c b/libavformat/allformats.c
-index 305fa46..802c5ee 100644
+index d3935b1..0909e5c 100644
 --- a/libavformat/allformats.c
 +++ b/libavformat/allformats.c
-@@ -99,7 +99,8 @@
- extern const FFOutputFormat ff_avs2_muxer;
+@@ -102,6 +102,7 @@ extern const FFOutputFormat ff_avs2_muxer;
  extern const FFInputFormat  ff_avs3_demuxer;
  extern const FFOutputFormat ff_avs3_muxer;
  extern const FFOutputFormat ff_av3a_muxer;
@@ -686,7 +683,7 @@ index 305fa46..802c5ee 100644
  extern const FFInputFormat  ff_bintext_demuxer;
 diff --git a/libavformat/av3adec.c b/libavformat/av3adec.c
 new file mode 100644
-index 0000000..32fe00d
+index 0000000..485420a
 --- /dev/null
 +++ b/libavformat/av3adec.c
 @@ -0,0 +1,419 @@
@@ -1110,7 +1107,7 @@ index 0000000..32fe00d
 +    .raw_codec_id   = AV_CODEC_ID_AV3A,
 +};
 diff --git a/libavformat/mov.c b/libavformat/mov.c
-index 15631f6..01d096d 100644
+index b29c41a..682cec3 100644
 --- a/libavformat/mov.c
 +++ b/libavformat/mov.c
 @@ -55,6 +55,7 @@
@@ -1121,7 +1118,7 @@ index 15631f6..01d096d 100644
  #include "avformat.h"
  #include "internal.h"
  #include "avio_internal.h"
-@@ -8317,6 +8318,125 @@ static int mov_read_dmlp(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+@@ -8500,6 +8501,125 @@ static int mov_read_dmlp(MOVContext *c, AVIOContext *pb, MOVAtom atom)
      return 0;
  }
  
@@ -1247,7 +1244,7 @@ index 15631f6..01d096d 100644
  static int mov_read_dvcc_dvvc(MOVContext *c, AVIOContext *pb, MOVAtom atom)
  {
      AVStream *st;
-@@ -9185,6 +9305,7 @@ static const MOVParseTableEntry mov_default_parse_table[] = {
+@@ -9422,6 +9542,7 @@ static const MOVParseTableEntry mov_default_parse_table[] = {
  { MKTAG('h','f','o','v'), mov_read_hfov },
  { MKTAG('d','O','p','s'), mov_read_dops },
  { MKTAG('d','m','l','p'), mov_read_dmlp },
@@ -1256,7 +1253,7 @@ index 15631f6..01d096d 100644
  { MKTAG('C','o','L','L'), mov_read_coll },
  { MKTAG('v','p','c','C'), mov_read_vpcc },
 diff --git a/libavformat/movenc.c b/libavformat/movenc.c
-index 83ce396..ceb63c8 100644
+index efd6329..bad4ea9 100644
 --- a/libavformat/movenc.c
 +++ b/libavformat/movenc.c
 @@ -29,6 +29,7 @@
@@ -1267,7 +1264,7 @@ index 83ce396..ceb63c8 100644
  #include "dovi_isom.h"
  #include "riff.h"
  #include "avio.h"
-@@ -921,6 +922,74 @@ static int mov_write_dmlp_tag(AVFormatContext *s, AVIOContext *pb, MOVTrack *tra
+@@ -922,6 +923,74 @@ static int mov_write_dmlp_tag(AVFormatContext *s, AVIOContext *pb, MOVTrack *tra
      return update_size(pb, pos);
  }
  
@@ -1342,7 +1339,7 @@ index 83ce396..ceb63c8 100644
  static int mov_write_SA3D_tag(AVFormatContext *s, AVIOContext *pb, MOVTrack *track)
  {
      const AVDictionaryEntry *str = av_dict_get(track->st->metadata, "SA3D", NULL, 0);
-@@ -1473,6 +1542,8 @@ static int mov_write_audio_tag(AVFormatContext *s, AVIOContext *pb, MOVMuxContex
+@@ -1477,6 +1546,8 @@ static int mov_write_audio_tag(AVFormatContext *s, AVIOContext *pb, MOVMuxContex
          ret = mov_write_dops_tag(s, pb, track);
      else if (track->par->codec_id == AV_CODEC_ID_TRUEHD)
          ret = mov_write_dmlp_tag(s, pb, track);
@@ -1351,34 +1348,39 @@ index 83ce396..ceb63c8 100644
      else if (tag == MOV_MP4_IPCM_TAG || tag == MOV_MP4_FPCM_TAG) {
          if (track->par->ch_layout.nb_channels > 1)
              ret = mov_write_chnl_tag(s, pb, track);
-@@ -2005,3 +2005,7 @@
+@@ -2096,6 +2167,10 @@ static unsigned int validate_codec_tag(const AVCodecTag *const *tags,
+ 
+ static unsigned int mov_find_codec_tag(AVFormatContext *s, MOVTrack *track)
  {
 +    if (track->par->codec_id == AV_CODEC_ID_AV3A) {
 +        if (track->par->codec_tag != MKTAG('a', 'v', '3', 'a'))
 +            track->par->codec_tag = MKTAG('a', 'v', '3', 'a');
 +    }
      if (is_cover_image(track->st))
+         return ff_codec_get_tag(codec_cover_image_tags, track->par->codec_id);
  
-@@ -8658,4 +8727,5 @@ static const AVCodecTag codec_mp4_tags[] = {
+@@ -8789,6 +8864,7 @@ static const AVCodecTag codec_mp4_tags[] = {
+     { AV_CODEC_ID_VP9,             MKTAG('v', 'p', '0', '9') },
      { AV_CODEC_ID_AV1,             MKTAG('a', 'v', '0', '1') },
      { AV_CODEC_ID_AAC,             MKTAG('m', 'p', '4', 'a') },
 +    { AV_CODEC_ID_AV3A,            MKTAG('a', 'v', '3', 'a') },
      { AV_CODEC_ID_ALAC,            MKTAG('a', 'l', 'a', 'c') },
- 
+     { AV_CODEC_ID_MP4ALS,          MKTAG('m', 'p', '4', 'a') },
+     { AV_CODEC_ID_MP3,             MKTAG('m', 'p', '4', 'a') },
 diff --git a/libavformat/mpegts.h b/libavformat/mpegts.h
-index 14ae312..1269a48 100644
+index 2bc5344..62f5ce3 100644
 --- a/libavformat/mpegts.h
 +++ b/libavformat/mpegts.h
-@@ -124,6 +124,7 @@
+@@ -129,6 +129,7 @@
  #define STREAM_TYPE_PRIVATE_DATA    0x06
  #define STREAM_TYPE_AUDIO_AAC       0x0f
  #define STREAM_TYPE_AUDIO_AAC_LATM  0x11
 +#define STREAM_TYPE_AUDIO_AV3A      0xd5
  #define STREAM_TYPE_VIDEO_MPEG4     0x10
- #define STREAM_TYPE_METADATA        0x15
- #define STREAM_TYPE_VIDEO_H264      0x1b
+ /** ISO/IEC 14496-1 (MPEG-4 Systems) SL-packetized stream or FlexMux stream
+     carried in PES packets */
 diff --git a/libavformat/mpegtsenc.c b/libavformat/mpegtsenc.c
-index 215783f..e457bc5 100644
+index 6935b71..0058c22 100644
 --- a/libavformat/mpegtsenc.c
 +++ b/libavformat/mpegtsenc.c
 @@ -443,6 +443,9 @@ static int get_dvb_stream_type(AVFormatContext *s, AVStream *st)
@@ -1391,9 +1393,7 @@ index 215783f..e457bc5 100644
      default:
          av_log_once(s, AV_LOG_WARNING, AV_LOG_DEBUG, &ts_st->data_st_warning,
                      "Stream %d, codec %s, is muxed as a private data stream "
-@@ -571,6 +574,8 @@ static int mpegts_write_pmt(AVFormatContext *s, MpegTSService *service)
-         case AVMEDIA_TYPE_AUDIO:
-             if (codec_id == AV_CODEC_ID_AC3)
+@@ -575,6 +578,8 @@ static int mpegts_write_pmt(AVFormatContext *s, MpegTSService *service)
                  put_registration_descriptor(&q, MKTAG('A', 'C', '-', '3'));
              if (codec_id == AV_CODEC_ID_EAC3)
                  put_registration_descriptor(&q, MKTAG('E', 'A', 'C', '3'));
