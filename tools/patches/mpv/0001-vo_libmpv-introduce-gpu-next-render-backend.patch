@@ -1327,6 +1327,7 @@ index 0000000000000..bb2e15eef39f6
 +#include "video/csputils.h"                // for mp_csp_params, mp_csp_equa...
 +#include "video/img_format.h"              // for mp_imgfmt
 +#include "video/mp_image.h"                // for mp_image, mp_image_params
++#include "video/mp_image_pool.h"           // for mp_image_hw_download
 +#include "video/out/gpu/video.h"           // for gl_video_opts, gl_video_conf
 +#include "video/out/gpu_next/ra.h"         // for ra_next_find_fmt, ra_next_...
 +#include "video/out/opengl/gl_headers.h"   // for GL_R8, GL_RG, GL_R16, ...
@@ -1427,6 +1428,7 @@ index 0000000000000..bb2e15eef39f6
 +    unsigned int vt_textures[PL_MAX_PLANES];
 +    int vt_num_textures;
 +    struct vt_texture_pool_entry *vt_pool_entry;
++    struct mp_image *mapped_image;
 +};
 +
 +/**
@@ -1750,6 +1752,22 @@ index 0000000000000..bb2e15eef39f6
 +        entry->in_use = false;
 +}
 +
++static struct mp_image *download_hw_frame_for_upload(struct pl_video *p,
++                                                     struct mp_image *mpi)
++{
++    if (!mpi || !mp_imgfmt_is_hwaccel(mpi->imgfmt))
++        return mpi;
++
++    struct mp_image *sw = mp_image_hw_download(mpi, NULL);
++    if (!sw && p && p->log) {
++        mp_msg(p->log, MSGL_ERR,
++               "gpu-next: failed to download hw frame (%s, subfmt=%s)\n",
++               mp_imgfmt_to_name(mpi->imgfmt),
++               mp_imgfmt_to_name(mpi->params.hw_subfmt));
++    }
++    return sw;
++}
++
 +#if HAVE_GL && defined(PL_HAVE_OPENGL) && (HAVE_VIDEOTOOLBOX_GL || HAVE_IOS_GL)
 +static bool videotoolbox_subfmt_to_gl(enum mp_imgfmt imgfmt, int plane,
 +                                      GLint *out_iformat, GLenum *out_format,
@@ -1955,22 +1973,29 @@ index 0000000000000..bb2e15eef39f6
 +    if (mpi->imgfmt == IMGFMT_VIDEOTOOLBOX) {
 +        release_vt_texture_pool_entry(fp->vt_pool_entry);
 +        fp->vt_pool_entry = NULL;
-+        mp_msg(p->log, MSGL_ERR, "gpu-next: failed to map VideoToolbox frame directly\n");
-+        talloc_free(mpi);
-+        return false;
++        mp_msg(p->log, MSGL_WARN,
++               "gpu-next: direct VideoToolbox mapping failed, falling back to hw download\n");
 +    }
 +#endif
 +
++    fp->mapped_image = download_hw_frame_for_upload(p, mpi);
++    if (!fp->mapped_image) {
++        talloc_free(mpi);
++        return false;
++    }
++
 +    // Use the RA helper to upload the mp_image data to a new set of textures
 +    // and populate the pl_frame struct with the result.
-+    if (!ra_upload_mp_image(p->ra, frame, mpi)) {
++    if (!ra_upload_mp_image(p->ra, frame, fp->mapped_image)) {
++        if (fp->mapped_image != mpi)
++            talloc_free(fp->mapped_image);
 +        talloc_free(mpi); // Clean up the mp_image reference on failure
 +        return false;
 +    }
 +
 +    // Store a pointer back to the original mp_image. This is used to get a unique
 +    // signature for the frame and to access metadata (like colorspace) later.
-+    frame->user_data = mpi;
++    frame->user_data = fp->mapped_image;
 +    return true;
 +}
 +
@@ -2007,6 +2032,8 @@ index 0000000000000..bb2e15eef39f6
 +    {
 +        ra_cleanup_pl_frame(p->ra, frame);
 +    }
++    if (fp->mapped_image && fp->mapped_image != mpi)
++        talloc_free(fp->mapped_image);
 +    // Free the mp_image reference itself.
 +    talloc_free(mpi);
 +}
@@ -2022,6 +2049,9 @@ index 0000000000000..bb2e15eef39f6
 +{
 +    // We only need to free the mp_image reference, as no GPU resources were created.
 +    struct mp_image *mpi = src->frame_data;
++    struct frame_priv *fp = mpi ? mpi->priv : NULL;
++    if (fp && fp->mapped_image && fp->mapped_image != mpi)
++        talloc_free(fp->mapped_image);
 +    talloc_free(mpi);
 +}
 +
@@ -2366,6 +2396,7 @@ index 0000000000000..bb2e15eef39f6
 +    bool mapped_vt = false;
 +    unsigned int vt_textures[PL_MAX_PLANES] = {0};
 +    int vt_num_textures = 0;
++    struct mp_image *upload_img = frame->current;
 +
 +    // Upload the mp_image to a pl_frame via the RA helper.
 +#if HAVE_GL && defined(PL_HAVE_OPENGL) && (HAVE_VIDEOTOOLBOX_GL || HAVE_IOS_GL)
@@ -2374,8 +2405,13 @@ index 0000000000000..bb2e15eef39f6
 +        mapped_vt = true;
 +    } else
 +#endif
-+    if (!ra_upload_mp_image(p->ra, &source_frame, frame->current)) {
++    {
++        upload_img = download_hw_frame_for_upload(p, frame->current);
++    }
++    if (!mapped_vt && (!upload_img || !ra_upload_mp_image(p->ra, &source_frame, upload_img))) {
 +        mp_msg(p->log, MSGL_ERR, "pl_video_screenshot: failed to prepare source image\n");
++        if (upload_img && upload_img != frame->current)
++            talloc_free(upload_img);
 +        return NULL;
 +    }
 +
@@ -2469,6 +2505,9 @@ index 0000000000000..bb2e15eef39f6
 +    {
 +        ra_cleanup_pl_frame(p->ra, &source_frame);
 +    }
++
++    if (upload_img && upload_img != frame->current)
++        talloc_free(upload_img);
 +
 +    return res;
 +}
