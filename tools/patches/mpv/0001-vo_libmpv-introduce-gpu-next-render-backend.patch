@@ -1714,6 +1714,13 @@ index 0000000000000..bb2e15eef39f6
 +    target->icc = p->icc_profile;
 +}
 +
++static struct pl_color_space get_default_libmpv_target_csp(struct pl_video *p)
++{
++    if (p && p->icc_profile)
++        return p->icc_profile->csp;
++    return pl_color_space_srgb;
++}
++
 +bool pl_video_set_icc_profile(struct pl_video *p, const void *data, size_t size)
 +{
 +    if (!p)
@@ -2265,6 +2272,9 @@ index 0000000000000..bb2e15eef39f6
 +{
 +    if (!p || !p->ra || !p->queue || !target_tex)
 +        return;
++    const struct gl_video_opts *opts = p->opts_cache->opts;
++    bool can_interpolate = frame && opts->interpolation && frame->display_synced &&
++                           !frame->still && frame->num_frames > 1;
 +    // Describe the target surface for libplacebo.
 +    struct pl_frame target_frame = {
 +        .num_planes = 1,
@@ -2314,7 +2324,15 @@ index 0000000000000..bb2e15eef39f6
 +    p->last_pts = target_pts;
 +
 +    struct pl_frame_mix queue_mix = {0};
-+    struct pl_queue_params qparams = *pl_queue_params(.pts = target_pts);
++    struct pl_queue_params qparams = *pl_queue_params(
++        .pts = target_pts,
++        .radius = pl_frame_mix_radius(&p->pars->params),
++        .vsync_duration = can_interpolate ? frame->ideal_frame_vsync_duration : 0,
++        .interpolation_threshold = opts->interpolation_threshold
++    );
++#if PL_API_VER >= 340
++    qparams.drift_compensation = 0;
++#endif
 +
 +    ra_next_queue_update(p->queue, &queue_mix, &qparams);
 +
@@ -2326,16 +2344,28 @@ index 0000000000000..bb2e15eef39f6
 +    }
 +
 +    update_render_options(p);
-+    if (representative_img) {
-+        target_frame.color = representative_img->params.color;
-+    } else if (p->current_params.imgfmt) {
-+        target_frame.color = p->current_params.color;
-+    } else {
-+        target_frame.color = pl_color_space_srgb;
-+    }
++    target_frame.color = get_default_libmpv_target_csp(p);
 +    apply_target_options(p, &target_frame,
 +                         representative_img ? representative_img->params.color.hdr.min_luma : 0.0f,
 +                         target_depth);
++
++    const struct pl_color_space *source_csp = representative_img
++        ? &representative_img->params.color
++        : (p->current_params.imgfmt ? &p->current_params.color : NULL);
++    if (source_csp && target_frame.color.transfer == PL_COLOR_TRC_SRGB &&
++        ((opts->sdr_adjust_gamma == 0 && opts->target_trc == PL_COLOR_TRC_UNKNOWN) ||
++         opts->sdr_adjust_gamma == -1))
++    {
++        switch (source_csp->transfer) {
++        case PL_COLOR_TRC_BT_1886:
++        case PL_COLOR_TRC_GAMMA22:
++        case PL_COLOR_TRC_SRGB:
++            target_frame.color.transfer = source_csp->transfer;
++            break;
++        default:
++            break;
++        }
++    }
 +
 +    // Manually build the final mix for the renderer, including the signatures.
 +    // We need a local array to hold the signature data. 32 is a safe upper bound.
@@ -2353,10 +2383,6 @@ index 0000000000000..bb2e15eef39f6
 +    // OSD against a black background.
 +    update_overlays(p, p->osd_res, 0, PL_OVERLAY_COORDS_DST_FRAME,
 +                   &p->osd_state_storage, &target_frame, representative_img);
-+
-+    // For a simple, non-interpolating backend, we can assume the display
-+    // frame's duration is equivalent to one source frame (1.0 in normalized time).
-+    mix.vsync_duration = 1.0f;
 +
 +    // Prepare the rendering parameters for libplacebo
 +    struct pl_render_params params = p->pars->params;
