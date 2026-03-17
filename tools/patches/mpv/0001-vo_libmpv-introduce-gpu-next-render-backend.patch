@@ -1,0 +1,1990 @@
+diff --git a/include/mpv/render.h b/include/mpv/render.h
+index 99aadeb5d837d..51505f2f9b043 100644
+--- a/include/mpv/render.h
++++ b/include/mpv/render.h
+@@ -422,6 +422,16 @@ typedef enum mpv_render_param_type {
+      * See MPV_RENDER_PARAM_SW_STRIDE for alignment requirements.
+      */
+     MPV_RENDER_PARAM_SW_POINTER = 20,
++    /**
++     * The name of the render backend to use. Valid for mpv_render_context_create().
++     *
++     * Type: char*
++     *
++     * Defined backends:
++     *   "gpu" (default)
++     *   "gpu-next"
++     */
++    MPV_RENDER_PARAM_BACKEND = 21,
+ } mpv_render_param_type;
+ 
+ /**
+diff --git a/meson.build b/meson.build
+index b5b6c2ca5023a..c196785491003 100644
+--- a/meson.build
++++ b/meson.build
+@@ -237,6 +237,9 @@ sources = files(
+     'video/out/gpu/utils.c',
+     'video/out/gpu/video.c',
+     'video/out/gpu/video_shaders.c',
++    'video/out/gpu_next/libmpv_gpu_next.c',
++    'video/out/gpu_next/ra.c',
++    'video/out/gpu_next/video.c',
+     'video/out/libmpv_sw.c',
+     'video/out/vo.c',
+     'video/out/vo_gpu.c',
+diff --git a/video/out/gpu_next/context.c b/video/out/gpu_next/context.c
+index b4bfa9d643a9a..84f4b303b2746 100644
+--- a/video/out/gpu_next/context.c
++++ b/video/out/gpu_next/context.c
+@@ -15,22 +15,32 @@
+  * License along with mpv.  If not, see <https://www.gnu.org/licenses/>.
+  */
+ 
+-#include <libplacebo/config.h>
++#include <libplacebo/config.h>                   // for PL_HAVE_OPENGL, PL_API_VER
+ 
+ #ifdef PL_HAVE_D3D11
+ #include <libplacebo/d3d11.h>
+ #endif
+ 
+ #ifdef PL_HAVE_OPENGL
+-#include <libplacebo/opengl.h>
++#include "mpv/render_gl.h"                       // for mpv_opengl_init_params
++#include <libplacebo/opengl.h>                   // for pl_opengl_destroy
++#include "video/out/gpu_next/libmpv_gpu_next.h"  // for libmpv_gpu_next_context
++#include "video/out/gpu_next/ra.h"               // for ra_pl_create, ra_pl_...
+ #endif
+ 
+-#include "context.h"
+-#include "config.h"
+-#include "common/common.h"
+-#include "options/m_config.h"
+-#include "video/out/placebo/utils.h"
+-#include "video/out/gpu/video.h"
++#include <stddef.h>                              // for NULL
++#include "config.h"                              // for HAVE_GL, HAVE_D3D11
++#include "context.h"                             // for gpu_ctx
++#include "common/msg.h"                          // for MP_ERR, mp_msg, mp_msg_err
++#include "mpv/client.h"                          // for mpv_error
++#include "mpv/render.h"                          // for mpv_render_param
++#include "options/options.h"                     // for mp_vo_opts
++#include "ta/ta_talloc.h"                        // for talloc_zero, talloc_...
++#include "video/out/gpu/context.h"               // for ra_ctx_opts, ra_ctx
++#include "video/out/libmpv.h"                    // for get_mpv_render_param
++#include "video/out/opengl/common.h"             // for GL
++#include "video/out/placebo/utils.h"             // for mppl_log_set_probing
++#include "video/out/vo.h"                        // for vo
+ 
+ #if HAVE_D3D11
+ #include "osdep/windows_utils.h"
+@@ -39,15 +49,27 @@
+ #endif
+ 
+ #if HAVE_GL
+-#include "video/out/opengl/context.h"
+-#include "video/out/opengl/ra_gl.h"
++#include "video/out/opengl/ra_gl.h"              // for ra_is_gl, ra_gl_get
+ # if HAVE_EGL
+-#include <EGL/egl.h>
++#include <EGL/egl.h>                             // for eglGetCurrentContext
+ # endif
+ #endif
+ 
+ #if HAVE_VULKAN
+-#include "video/out/vulkan/context.h"
++#include "video/out/vulkan/context.h"            // for ra_vk_ctx_get
++#endif
++
++#if HAVE_GL
++// Store Libplacebo OpenGL context information.
++struct priv {
++    pl_log pl_log;
++    pl_opengl gl;
++    pl_gpu gpu;
++    struct ra_next *ra;
++
++    // Store a persistent copy of the init params to avoid a dangling pointer.
++    mpv_opengl_init_params gl_params;
++};
+ #endif
+ 
+ #if HAVE_D3D11
+@@ -235,3 +257,177 @@ void gpu_ctx_destroy(struct gpu_ctx **ctxp)
+     talloc_free(ctx);
+     *ctxp = NULL;
+ }
++
++#if HAVE_GL && defined(PL_HAVE_OPENGL)
++/**
++ * @brief Callback to make the OpenGL context current.
++ * @param priv Pointer to the private data (mpv_opengl_init_params).
++ * @return True on success, false on failure.
++ */
++static bool pl_callback_makecurrent_gl(void *priv)
++{
++    mpv_opengl_init_params *gl_params = priv;
++    // The mpv render API contract specifies that the client must make the
++    // context current inside its get_proc_address callback. We can trigger
++    // this by calling it with a harmless, common function name.
++    if (gl_params && gl_params->get_proc_address) {
++        gl_params->get_proc_address(gl_params->get_proc_address_ctx, "glGetString");
++        return true;
++    }
++
++    return false;
++}
++
++/**
++ * @brief Callback to release the OpenGL context.
++ * @param priv Pointer to the private data (mpv_opengl_init_params).
++ */
++static void pl_callback_releasecurrent_gl(void *priv)
++{
++}
++
++/**
++ * @brief Callback to log messages from libplacebo.
++ * @param log_priv Pointer to the private data (mp_log).
++ * @param level The log level.
++ * @param msg The log message.
++ */
++static void pl_log_cb(void *log_priv, enum pl_log_level level, const char *msg)
++{
++    struct mp_log *log = log_priv;
++    mp_msg(log, MSGL_WARN, "[gpu-next:pl] %s\n", msg);
++}
++
++/**
++ * @brief Initializes the OpenGL context for the GPU next renderer.
++ * @param ctx The libmpv_gpu_next_context to initialize.
++ * @param params The render parameters.
++ * @return 0 on success, negative error code on failure.
++ */
++static int libmpv_gpu_next_init_gl(struct libmpv_gpu_next_context *ctx, mpv_render_param *params)
++{
++    ctx->priv = talloc_zero(NULL, struct priv);
++    struct priv *p = ctx->priv;
++
++    mpv_opengl_init_params *gl_params =
++    get_mpv_render_param(params, MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, NULL);
++    if (!gl_params || !gl_params->get_proc_address)
++        return MPV_ERROR_INVALID_PARAMETER;
++
++    // Make a persistent copy of the params struct's contents.
++    p->gl_params = *gl_params;
++
++    // Setup libplacebo logging
++    struct pl_log_params log_params = {
++        .log_level = PL_LOG_DEBUG
++    };
++
++    // Enable verbose logging if trace is enabled
++    if (mp_msg_test(ctx->log, MSGL_TRACE)) {
++        log_params.log_cb = pl_log_cb;
++        log_params.log_priv = ctx->log;
++    }
++
++    p->pl_log = pl_log_create(PL_API_VER, &log_params);
++    p->gl = pl_opengl_create(p->pl_log, pl_opengl_params(
++        .get_proc_addr_ex = (pl_voidfunc_t (*)(void*, const char*))gl_params->get_proc_address,
++        .proc_ctx = gl_params->get_proc_address_ctx,
++        .make_current = pl_callback_makecurrent_gl,
++        .release_current = pl_callback_releasecurrent_gl,
++        .priv = &p->gl_params // Pass the ADDRESS of our persistent copy
++    ));
++
++    if (!p->gl) {
++        MP_ERR(ctx, "Failed to create libplacebo OpenGL context.\n");
++        pl_log_destroy(&p->pl_log);
++        return MPV_ERROR_UNSUPPORTED;
++    }
++    p->gpu = p->gl->gpu;
++
++    // Pass the libplacebo log to the RA as well.
++    p->ra = ra_pl_create(p->gpu, ctx->log, p->pl_log);
++    if (!p->ra) {
++        pl_opengl_destroy(&p->gl);
++        pl_log_destroy(&p->pl_log);
++        return MPV_ERROR_VO_INIT_FAILED;
++    }
++
++    ctx->ra = p->ra;
++    ctx->gpu = p->gpu;
++    return 0;
++}
++
++/**
++ * @brief Wraps an OpenGL framebuffer object (FBO) as a libplacebo texture.
++ * @param ctx The libmpv_gpu_next_context.
++ * @param params The render parameters.
++ * @param out_tex Pointer to the output texture.
++ * @return 0 on success, negative error code on failure.
++ */
++static int libmpv_gpu_next_wrap_fbo_gl(struct libmpv_gpu_next_context *ctx,
++                    mpv_render_param *params, pl_tex *out_tex)
++{
++    struct priv *p = ctx->priv;
++    *out_tex = NULL;
++
++    // Get the FBO from the render parameters
++    mpv_opengl_fbo *fbo =
++        get_mpv_render_param(params, MPV_RENDER_PARAM_OPENGL_FBO, NULL);
++    if (!fbo)
++        return MPV_ERROR_INVALID_PARAMETER;
++
++    // Wrap the FBO as a libplacebo texture
++    pl_tex tex = pl_opengl_wrap(p->gpu, pl_opengl_wrap_params(
++        .framebuffer = fbo->fbo,
++        .width = fbo->w,
++        .height = fbo->h,
++        .iformat = fbo->internal_format
++    ));
++
++    if (!tex) {
++        MP_ERR(ctx, "Failed to wrap provided FBO as a libplacebo texture.\n");
++        return MPV_ERROR_GENERIC;
++    }
++
++    *out_tex = tex;
++    return 0;
++}
++
++/**
++ * @brief Callback to mark the end of a frame rendering.
++ * @param ctx The libmpv_gpu_next_context.
++ */
++static void libmpv_gpu_next_done_frame_gl(struct libmpv_gpu_next_context *ctx)
++{
++    // Nothing to do (yet), leaving the function empty.
++}
++
++/**
++ * @brief Destroys the OpenGL context for the GPU next renderer.
++ * @param ctx The libmpv_gpu_next_context to destroy.
++ */
++static void libmpv_gpu_next_destroy_gl(struct libmpv_gpu_next_context *ctx)
++{
++    struct priv *p = ctx->priv;
++    if (!p)
++        return;
++
++    if (p->ra) {
++        ra_pl_destroy(&p->ra);
++    }
++
++    pl_opengl_destroy(&p->gl);
++    pl_log_destroy(&p->pl_log);
++}
++
++/**
++ * @brief Context functions for the OpenGL GPU next renderer.
++ */
++const struct libmpv_gpu_next_context_fns libmpv_gpu_next_context_gl = {
++    .api_name = MPV_RENDER_API_TYPE_OPENGL,
++    .init = libmpv_gpu_next_init_gl,
++    .wrap_fbo = libmpv_gpu_next_wrap_fbo_gl,
++    .done_frame = libmpv_gpu_next_done_frame_gl,
++    .destroy = libmpv_gpu_next_destroy_gl,
++};
++#endif
+diff --git a/video/out/gpu_next/context.h b/video/out/gpu_next/context.h
+index aa441964fb098..d15ab6ca6e7ca 100644
+--- a/video/out/gpu_next/context.h
++++ b/video/out/gpu_next/context.h
+@@ -17,13 +17,20 @@
+ 
+ #pragma once
+ 
+-#include <libplacebo/renderer.h>
++#include "libplacebo/gpu.h"        // for pl_gpu
++#include "libplacebo/log.h"        // for pl_log
++#include "libplacebo/swapchain.h"  // for pl_swapchain
++#include "stdbool.h"               // for bool
+ 
+-struct mp_log;
+-struct ra_ctx;
++/**
++ * The rendering abstraction context.
++ */
+ struct ra_ctx_opts;
+ struct vo;
+ 
++/**
++ * The main GPU context structure.
++ */
+ struct gpu_ctx {
+     struct mp_log *log;
+     struct ra_ctx *ra_ctx;
+diff --git a/video/out/gpu_next/libmpv_gpu_next.c b/video/out/gpu_next/libmpv_gpu_next.c
+new file mode 100644
+index 0000000000000..31c0cb50bc986
+--- /dev/null
++++ b/video/out/gpu_next/libmpv_gpu_next.c
+@@ -0,0 +1,307 @@
++#include "libmpv_gpu_next.h"
++#include <stddef.h>             // for NULL
++#include "common/msg.h"         // for mp_log_new, MP_ERR
++#include "config.h"             // for HAVE_GL
++#include "libplacebo/config.h"  // for PL_HAVE_OPENGL
++#include "libplacebo/gpu.h"     // for pl_tex, pl_tex_params, pl_tex_t
++#include "mpv/client.h"         // for mpv_error
++#include "mpv/render.h"         // for mpv_render_param, mpv_render_param_type
++#include "ra.h"                 // for ra_next_tex_destroy
++#include "stdbool.h"            // for bool, false
++#include "string.h"             // for strcmp
++#include "ta/ta_talloc.h"       // for talloc_free, talloc_zero
++#include "video.h"              // for pl_video_check_format, pl_video_init
++#include "video/hwdec.h"        // for hwdec_devices_create, hwdec_devices_d...
++#include "video/out/libmpv.h"   // for render_backend, get_mpv_render_param
++#include "video/out/vo.h"       // for vo_frame (ptr only), voctrl_screenshot
++
++/*
++ * Structure for the image parameters.
++ */
++struct mp_image_params;
++struct mp_osd_res;
++struct mp_rect;
++
++/*
++ * Private data for the GPU next render backend.
++ */
++struct priv {
++    struct libmpv_gpu_next_context *context; // Manages the API (e.g., OpenGL)
++    struct pl_video *video_engine;           // Manages synchronous libplacebo rendering
++};
++
++/*
++* List of available API context implementations (e.g., GL, Vulkan - currently only OpenGL)
++*/
++static const struct libmpv_gpu_next_context_fns *context_backends[] = {
++#if HAVE_GL && defined(PL_HAVE_OPENGL)
++    &libmpv_gpu_next_context_gl,
++#endif
++    NULL
++};
++
++/*
++ * @brief Initializes the render_backend layer.
++ * @param ctx The render_backend context.
++ * @param params The render parameters.
++ * @return 0 on success, negative error code on failure.
++ */
++static int init(struct render_backend *ctx, mpv_render_param *params)
++{
++    ctx->priv = talloc_zero(NULL, struct priv);
++    struct priv *p = ctx->priv;
++
++    // Get the API type from the render parameters.
++    char *api = get_mpv_render_param(params, MPV_RENDER_PARAM_API_TYPE, NULL);
++    if (!api) {
++        MP_ERR(ctx, "API type not specified.\n");
++        return MPV_ERROR_INVALID_PARAMETER;
++    }
++
++    // Find and initialize the requested API context (e.g., _gl.c).
++    // This will create the pl_gpu and the `ra` (libplacebo render abstraction).
++    for (int n = 0; context_backends[n]; n++) {
++        const struct libmpv_gpu_next_context_fns *backend = context_backends[n];
++        if (strcmp(backend->api_name, api) == 0) {
++            p->context = talloc_zero(p, struct libmpv_gpu_next_context);
++            *p->context = (struct libmpv_gpu_next_context){
++                .global = ctx->global,
++                .log = mp_log_new(p, ctx->log, "gpu-next-ctx"),
++                .fns = backend,
++            };
++            break;
++        }
++    }
++    if (!p->context) {
++        MP_ERR(ctx, "Requested API type '%s' is not supported.\n", api);
++        return MPV_ERROR_NOT_IMPLEMENTED;
++    }
++    int err = p->context->fns->init(p->context, params);
++    if (err < 0) {
++        talloc_free(p->context);
++        p->context = NULL;
++        return err;
++    }
++
++    // Initialize our synchronous libplacebo rendering engine.
++    p->video_engine = pl_video_init(ctx->global, ctx->log, p->context->ra);
++    if (!p->video_engine) {
++        p->context->fns->destroy(p->context);
++        talloc_free(p->context);
++        return MPV_ERROR_VO_INIT_FAILED;
++    }
++
++    // Create hardware decoder devices.
++    ctx->hwdec_devs = hwdec_devices_create();
++    ctx->driver_caps = VO_CAP_ROTATE90 | VO_CAP_VFLIP;
++    return 0;
++}
++
++/*
++ * @brief Destroys the render_backend layer.
++ * @param ctx The render_backend context.
++ */
++static void destroy(struct render_backend *ctx)
++{
++    struct priv *p = ctx->priv;
++    if (!p) return;
++
++    hwdec_devices_destroy(ctx->hwdec_devs);
++    pl_video_uninit(&p->video_engine);
++    if (p->context) {
++        p->context->fns->destroy(p->context); // This destroys the RA
++        talloc_free(p->context);
++    }
++    talloc_free(p);
++    ctx->priv = NULL;
++}
++
++/*
++ * @brief Renders a video frame.
++ * @param ctx The render_backend context.
++ * @param params The render parameters.
++ * @param frame The video frame to render.
++ * @return 0 on success, negative error code on failure.
++ */
++static int render(struct render_backend *ctx, mpv_render_param *params,
++                  struct vo_frame *frame)
++{
++    struct priv *p = ctx->priv;
++    if (!p->video_engine) return MPV_ERROR_UNINITIALIZED;
++
++    // Wrap the framebuffer object (FBO) for rendering.
++    pl_tex target_tex = NULL;
++    int err = p->context->fns->wrap_fbo(p->context, params, &target_tex);
++    if (err < 0) return err;
++    if (!target_tex) return MPV_ERROR_GENERIC;
++
++    // Render the video frame.
++    pl_video_render(p->video_engine, frame, target_tex);
++
++    // Destroy the temporary wrapper texture via the RA.
++    ra_next_tex_destroy(p->context->ra, &target_tex);
++
++    if (p->context->fns->done_frame)
++        p->context->fns->done_frame(p->context);
++
++    return 0;
++}
++
++/*
++ * @brief Reconfigures the video engine with new image parameters.
++ * @param ctx The render_backend context.
++ * @param params The new image parameters.
++ */
++static void reconfig(struct render_backend *ctx, struct mp_image_params *params)
++{
++    struct priv *p = ctx->priv;
++    if (p->video_engine)
++        pl_video_reconfig(p->video_engine, params);
++}
++
++/*
++ * @brief Resizes the video output.
++ * @param ctx The render_backend context.
++ * @param src The source rectangle.
++ * @param dst The destination rectangle.
++ * @param osd The OSD rectangle.
++ */
++static void resize(struct render_backend *ctx, struct mp_rect *src,
++                   struct mp_rect *dst, struct mp_osd_res *osd)
++{
++    struct priv *p = ctx->priv;
++    if (p->video_engine)
++        pl_video_resize(p->video_engine, dst, osd);
++}
++
++/*
++ * @brief Updates the external state of the render_backend.
++ * @param ctx The render_backend context.
++ * @param vo The video output context.
++ */
++static void update_external(struct render_backend *ctx, struct vo *vo)
++{
++    struct priv *p = ctx->priv;
++    if (p->video_engine)
++        pl_video_update_osd(p->video_engine, vo ? vo->osd : NULL);
++}
++
++/*
++ * @brief Resets the video engine.
++ * @param ctx The render_backend context.
++ */
++static void reset(struct render_backend *ctx)
++{
++    struct priv *p = ctx->priv;
++    if (p->video_engine)
++        pl_video_reset(p->video_engine);
++}
++
++/*
++ * @brief Checks if the given image format is supported.
++ * @param ctx The render_backend context.
++ * @param imgfmt The image format to check.
++ * @return True if the format is supported, false otherwise.
++ */
++static bool check_format(struct render_backend *ctx, int imgfmt)
++{
++    struct priv *p = ctx->priv;
++    return p->video_engine ? pl_video_check_format(p->video_engine, imgfmt) : false;
++}
++
++/*
++ * @brief Gets the target size for rendering.
++ * @param ctx The render_backend context.
++ * @param params The render parameters.
++ * @param out_w Pointer to the output width.
++ * @param out_h Pointer to the output height.
++ * @return 0 on success, negative error code on failure.
++ */
++static int get_target_size(struct render_backend *ctx, mpv_render_param *params, int *out_w, int *out_h)
++{
++    struct priv *p = ctx->priv;
++    if (!p->context || !p->context->fns || !p->context->ra) return MPV_ERROR_UNINITIALIZED;
++    pl_tex tex = NULL;
++    int err = p->context->fns->wrap_fbo(p->context, params, &tex);
++    if (err < 0) return err;
++    if (!tex) return MPV_ERROR_GENERIC;
++    *out_w = tex->params.w;
++    *out_h = tex->params.h;
++    // Destroy the temporary wrapper texture via the RA.
++    ra_next_tex_destroy(p->context->ra, &tex);
++    return 0;
++}
++
++/*
++ * @brief Takes a screenshot of the current video frame.
++ * @param ctx The render_backend context.
++ * @param frame The video frame to capture.
++ * @param args The screenshot arguments.
++ */
++static void screenshot(struct render_backend *ctx, struct vo_frame *frame,
++                       struct voctrl_screenshot *args)
++{
++    struct priv *p = ctx->priv;
++    args->res = NULL;
++    if (!p || !p->video_engine)
++        return;
++
++    /* Let the pl_video engine perform the screenshot (uploads, tone-mapping,
++     * render to an sRGB temporary, download). Returns an mp_image* or NULL. */
++    struct mp_image *img = pl_video_screenshot(p->video_engine, frame);
++    if (img)
++        args->res = img;
++}
++
++/*
++ * @brief Sets a render parameter.
++ * @param ctx The render_backend context.
++ * @param param The render parameter to set.
++ * @return 0 on success, negative error code on failure.
++ */
++static int set_parameter(struct render_backend *ctx, mpv_render_param param)
++{
++    return MPV_ERROR_NOT_IMPLEMENTED;
++}
++
++/*
++ * @brief Gets an image for rendering.
++ * @param ctx The render_backend context.
++ * @param imgfmt The image format.
++ * @param w The width of the image.
++ * @param h The height of the image.
++ * @param stride_align The stride alignment.
++ * @param flags The image flags.
++ * @return A pointer to the image, or NULL on failure.
++ */
++static struct mp_image *get_image(struct render_backend *ctx, int imgfmt,
++                                  int w, int h, int stride_align, int flags)
++{
++    return NULL;
++}
++
++/*
++ * @brief Collects performance data from the render_backend.
++ * @param ctx The render_backend context.
++ * @param out The output structure to fill with performance data.
++ */
++static void perfdata(struct render_backend *ctx,
++                     struct voctrl_performance_data *out)
++{
++}
++
++const struct render_backend_fns render_backend_gpu_next = {
++    .init = init,
++    .destroy = destroy,
++    .render = render,
++    .check_format = check_format,
++    .set_parameter = set_parameter,
++    .reconfig = reconfig,
++    .reset = reset,
++    .update_external = update_external,
++    .resize = resize,
++    .get_target_size = get_target_size,
++    .get_image = get_image,
++    .screenshot = screenshot,
++    .perfdata = perfdata,
++};
+diff --git a/video/out/gpu_next/libmpv_gpu_next.h b/video/out/gpu_next/libmpv_gpu_next.h
+new file mode 100644
+index 0000000000000..d48c67ee433c0
+--- /dev/null
++++ b/video/out/gpu_next/libmpv_gpu_next.h
+@@ -0,0 +1,80 @@
++#pragma once
++
++#include <libplacebo/gpu.h>  // for pl_gpu, pl_tex
++#include "mpv/render.h"      // for mpv_render_param
++
++/**
++ * This struct represents an instance of a specific API context implementation.
++ * It's created by the Host (`libmpv_gpu_next.c`) and passed to the concrete
++ * implementation (e.g., `libmpv_gpu_next_gl.c`) so it can access global state
++ * and return its results.
++ */
++struct libmpv_gpu_next_context {
++    // Inputs from the Host
++    struct mpv_global *global;
++    struct mp_log *log;
++    void *priv; // Private state for the implementation's use
++
++    const struct libmpv_gpu_next_context_fns *fns;
++
++    // The abstract "toolbox" that the engine will use.
++    struct ra_next *ra;
++    // The underlying GPU object, needed by the Host for resource management.
++    pl_gpu gpu;
++};
++
++/**
++ * This struct defines the "vtable" or "interface" for a specific API context
++ * implementation. Our Host (`libmpv_gpu_next.c`) will find an implementation
++ * that matches the user's request and will then call these functions through
++ * this table.
++ */
++struct libmpv_gpu_next_context_fns {
++    // The name of the API, e.g., "opengl". This must match the string provided
++    // by the user in MPV_RENDER_PARAM_API_TYPE.
++    const char *api_name;
++
++    /**
++     * Initializes the graphics context based on user parameters.
++     * On success, it must populate the `ra` and `gpu` fields of the
++     * `libmpv_gpu_next_context` struct.
++     * @param ctx The context instance to initialize.
++     * @param params The list of parameters from the user.
++     * @return 0 on success, or a negative mpv_error code.
++     */
++    int (*init)(struct libmpv_gpu_next_context *ctx, mpv_render_param *params);
++
++    /**
++     * Wraps the user's render target (provided in `params`) into a `pl_tex`
++     * that our engine can understand.
++     * @param ctx The context instance.
++     * @param params The list of parameters from the user, containing the target.
++     * @param out_tex On success, this will point to a newly created, temporary
++     *                `pl_tex` that wraps the user's target. The caller is
++     *                responsible for freeing this texture.
++     * @return 0 on success, or a negative mpv_error code.
++     */
++    int (*wrap_fbo)(struct libmpv_gpu_next_context *ctx,
++                    mpv_render_param *params, pl_tex *out_tex);
++
++    /**
++     * Called by the Host after a frame has been rendered to the user's target.
++     * This can be used for presentation timing or swapchain management.
++     * This function can be NULL if no action is needed.
++     * @param ctx The context instance.
++     */
++    void (*done_frame)(struct libmpv_gpu_next_context *ctx);
++
++    /**
++     * Destroys the graphics context and all associated resources.
++     * @param ctx The context instance to destroy.
++     */
++    void (*destroy)(struct libmpv_gpu_next_context *ctx);
++};
++
++/**
++ * A forward declaration for the concrete OpenGL API context implementation,
++ * which is defined in `libmpv_gpu_next_gl.c`. The Host needs this to add it
++ * to its list of available backends.
++ */
++extern const struct libmpv_gpu_next_context_fns libmpv_gpu_next_context_gl;
+diff --git a/video/out/gpu_next/ra.c b/video/out/gpu_next/ra.c
+new file mode 100644
+index 0000000000000..c8411dc5f3615
+--- /dev/null
++++ b/video/out/gpu_next/ra.c
+@@ -0,0 +1,409 @@
++#include "video/out/gpu_next/ra.h"
++#include <libplacebo/renderer.h>           // for pl_frame, pl_plane, pl_ren...
++#include <libplacebo/utils/upload.h>       // for pl_plane_data, pl_upload_p...
++#include <stdint.h>                        // for uint64_t
++#include <stdlib.h>                        // for NULL, abs
++#include <string.h>                        // for memset
++#include "common/common.h"                 // for MPSWAP, MPMAX
++#include "common/msg.h"                    // for mp_msg, MSGL_DEBUG, MSGL_ERR
++#include "libplacebo/colorspace.h"         // for pl_bit_encoding, pl_bit_en...
++#include "libplacebo/gpu.h"                // for pl_tex, pl_fmt_type, pl_fi...
++#include "libplacebo/log.h"                // for pl_log
++#include "libplacebo/utils/frame_queue.h"  // for pl_queue_create, pl_queue_...
++#include "ta/ta_talloc.h"                  // for talloc_free, talloc_zero
++#include "video/img_format.h"              // for mp_imgfmt_comp_desc, mp_im...
++#include "video/mp_image.h"                // for mp_image, mp_image_params
++#include "video/out/vo.h"                  // for vo
++
++/**
++ * @brief Private state for the libplacebo rendering abstraction.
++ *
++ * This struct contains all the internal state for the `ra_pl` implementation.
++ * The public `ra_next` struct must be the first member to allow for safe casting
++ * from a `ra_next*` to a `ra_priv*`.
++ */
++struct ra_priv {
++    struct ra_next pub;     // Public interface, must be the first member.
++    pl_renderer renderer;   // The core libplacebo renderer instance.
++    struct vo *vo;          // Back-pointer to the video output instance for context.
++
++    // OSD state
++    pl_tex *sub_tex;        // Texture pool for subtitles and OSD bitmaps.
++    int num_sub_tex;        // Current number of textures in the pool.
++    pl_tex overlay_tex;     // A texture for overlays.
++    pl_log pl_log;          // The libplacebo logging context.
++};
++
++/* --- New Abstraction Implementations --- */
++
++ra_queue ra_next_queue_create(struct ra_next *ra)
++{
++    return pl_queue_create(ra->gpu);
++}
++
++void ra_next_queue_destroy(ra_queue *queue)
++{
++    pl_queue_destroy(queue);
++}
++
++void ra_next_queue_push(ra_queue queue, const struct pl_source_frame *frame)
++{
++    pl_queue_push(queue, frame);
++}
++
++void ra_next_queue_update(ra_queue queue, struct pl_frame_mix *mix, const struct pl_queue_params *params)
++{
++    pl_queue_update(queue, mix, params);
++}
++
++void ra_next_queue_reset(ra_queue queue)
++{
++    pl_queue_reset(queue);
++}
++
++pl_tex ra_next_tex_create(struct ra_next *ra, const struct pl_tex_params *params)
++{
++    return pl_tex_create(ra->gpu, params);
++}
++
++void ra_next_tex_destroy(struct ra_next *ra, pl_tex *tex)
++{
++    pl_tex_destroy(ra->gpu, tex);
++}
++
++bool ra_next_tex_recreate(struct ra_next *ra, pl_tex *tex, const struct pl_tex_params *params)
++{
++    return pl_tex_recreate(ra->gpu, tex, params);
++}
++
++bool ra_next_tex_upload(struct ra_next *ra, const struct pl_tex_transfer_params *params)
++{
++    return pl_tex_upload(ra->gpu, params);
++}
++
++bool ra_next_tex_download(struct ra_next *ra, const struct pl_tex_transfer_params *params)
++{
++    return pl_tex_download(ra->gpu, params);
++}
++
++bool ra_next_render_image_mix(struct ra_next *ra, const struct pl_frame_mix *mix,
++                         struct pl_frame *target, const struct pl_render_params *params)
++{
++    struct ra_priv *p = (struct ra_priv *)ra;
++    if (!p->renderer) return false;
++    return pl_render_image_mix(p->renderer, mix, target, params);
++}
++
++bool ra_next_render_image(struct ra_next *ra, const struct pl_frame *src,
++                     struct pl_frame *target, const struct pl_render_params *params)
++{
++    struct ra_priv *p = (struct ra_priv *)ra;
++    if (!p->renderer) return false;
++    return pl_render_image(p->renderer, src, target, params);
++}
++
++pl_fmt ra_next_find_fmt(struct ra_next *ra, enum pl_fmt_type type, int num_comps,
++                   int comp_bits, int alpha_bits, unsigned caps)
++{
++    return pl_find_fmt(ra->gpu, type, num_comps, comp_bits, alpha_bits, caps);
++}
++
++
++/**
++ * @brief Public wrapper to upload an mpv image to a libplacebo frame.
++ * @param ra The rendering abstraction context.
++ * @param out_frame The destination pl_frame to be populated.
++ * @param img The source mp_image containing pixel data.
++ * @return True on success, false on failure.
++ */
++bool ra_upload_mp_image(struct ra_next *ra, struct pl_frame *out_frame,
++                        const struct mp_image *img)
++{
++    if (!img || !out_frame) return false;
++    return upload_mp_image_to_pl_frame(ra, out_frame, img); // reuse existing impl
++}
++
++/**
++ * @brief Public wrapper to clean up GPU resources associated with a pl_frame.
++ * @param ra The rendering abstraction context.
++ * @param frame The pl_frame whose textures should be destroyed.
++ */
++void ra_cleanup_pl_frame(struct ra_next *ra, struct pl_frame *frame)
++{
++    ra_pl_cleanup_frame(ra, frame); // reuse existing impl
++}
++
++/**
++ * @brief Gets the underlying libplacebo renderer instance.
++ * @param ra The rendering abstraction context.
++ * @return A pointer to the pl_renderer, or NULL if not initialized.
++ */
++pl_renderer ra_get_renderer(struct ra_next *ra)
++{
++    struct ra_priv *p = (struct ra_priv *)ra;
++    return p ? p->renderer : NULL;
++}
++
++/**
++ * @brief Gets the underlying libplacebo GPU handle.
++ * @param ra The rendering abstraction context.
++ * @return The pl_gpu handle.
++ */
++pl_gpu ra_get_gpu(struct ra_next *ra)
++{
++    return ra ? ra->gpu : NULL;
++}
++
++/**
++ * @brief Gets the libplacebo logging context.
++ * @param ra The rendering abstraction context.
++ * @return The pl_log handle.
++ */
++pl_log ra_get_pl_log(struct ra_next *ra)
++{
++    if (!ra)
++        return NULL;
++    struct ra_priv *p = (struct ra_priv *)ra;
++    return p->pl_log;
++}
++
++/**
++ * @brief Associates a video output (vo) context with the rendering abstraction.
++ * @param ra The rendering abstraction context.
++ * @param vo The video output context to associate.
++ */
++void ra_pl_set_vo(struct ra_next *ra, struct vo *vo)
++{
++    struct ra_priv *p = (struct ra_priv *)ra;
++    p->vo = vo;
++    mp_msg(ra->log, MSGL_DEBUG, "ra_pl_set_vo: vo=%p osd=%p\n", (void*)vo, vo ? (void*)vo->osd : NULL);
++}
++
++/**
++ * @brief Frees all GPU textures associated with a given `pl_frame`.
++ * @param ra The rendering abstraction context.
++ * @param frame The frame to clean up.
++ */
++void ra_pl_cleanup_frame(struct ra_next *ra, struct pl_frame *frame)
++{
++    if (!frame)
++        return;
++    // Iterate over each plane and destroy its associated texture.
++    for (int i = 0; i < frame->num_planes; i++)
++        ra_next_tex_destroy(ra, &frame->planes[i].texture);
++}
++
++/**
++ * @brief Translates an mpv image format enum into a libplacebo plane description.
++ * This is a key translation layer between mpv's and libplacebo's data structures.
++ * @param out_data The output array of `pl_plane_data` to be populated.
++ * @param out_bits The output bit encoding information.
++ * @param imgfmt The input mpv image format enum.
++ * @param use_uint Whether to use unsigned integer formats.
++ * @return The number of planes on success, 0 on failure.
++ */
++static int plane_data_from_imgfmt(struct pl_plane_data out_data[4],
++                                  struct pl_bit_encoding *out_bits,
++                                  enum mp_imgfmt imgfmt, bool use_uint)
++{
++    struct mp_imgfmt_desc desc = mp_imgfmt_get_desc(imgfmt);
++    if (!desc.num_planes || !(desc.flags & MP_IMGFLAG_HAS_COMPS))
++        return 0;
++
++    // Filter out unsupported or non-CPU formats.
++    if (desc.flags & MP_IMGFLAG_HWACCEL || !(desc.flags & MP_IMGFLAG_NE) ||
++        desc.flags & MP_IMGFLAG_PAL ||
++        ((desc.flags & MP_IMGFLAG_TYPE_FLOAT) && (desc.flags & MP_IMGFLAG_YUV)))
++        return 0;
++
++    bool has_bits = false;
++    bool any_padded = false;
++
++    // Iterate through each plane of the mpv image format.
++    for (int p = 0; p < desc.num_planes; p++) {
++        struct pl_plane_data *data = &out_data[p];
++        struct mp_imgfmt_comp_desc sorted[MP_NUM_COMPONENTS];
++        int num_comps = 0;
++        if (desc.bpp[p] % 8)
++            return 0; // Require byte-aligned pixels.
++
++        // Collect and sort all components belonging to the current plane.
++        for (int c = 0; c < mp_imgfmt_desc_get_num_comps(&desc); c++) {
++            if (desc.comps[c].plane != p)
++                continue;
++
++            data->component_map[num_comps] = c;
++            sorted[num_comps] = desc.comps[c];
++            num_comps++;
++
++            // Simple insertion sort to order components by memory offset.
++            for (int i = num_comps - 1; i > 0; i--) {
++                if (sorted[i].offset >= sorted[i - 1].offset)
++                    break;
++                MPSWAP(struct mp_imgfmt_comp_desc, sorted[i], sorted[i - 1]);
++                MPSWAP(int, data->component_map[i], data->component_map[i - 1]);
++            }
++        }
++
++        // Calculate component sizes, padding, and bit encoding for libplacebo.
++        uint64_t total_bits = 0;
++        memset(data->component_size, 0, sizeof(data->component_size));
++        for (int c = 0; c < num_comps; c++) {
++            data->component_size[c] = sorted[c].size;
++            data->component_pad[c] = sorted[c].offset - total_bits;
++            total_bits += data->component_pad[c] + data->component_size[c];
++            any_padded |= sorted[c].pad;
++
++            if (!out_bits || data->component_map[c] == 3) // PL_CHANNEL_A
++                continue;
++
++            struct pl_bit_encoding bits = {
++                .sample_depth = data->component_size[c],
++                .color_depth = sorted[c].size - abs(sorted[c].pad),
++                .bit_shift = MPMAX(sorted[c].pad, 0),
++            };
++
++            // Ensure all components have the same bit encoding.
++            if (!has_bits) {
++                *out_bits = bits;
++                has_bits = true;
++            } else if (!pl_bit_encoding_equal(out_bits, &bits)) {
++                *out_bits = (struct pl_bit_encoding){0};
++                out_bits = NULL;
++            }
++        }
++
++        data->pixel_stride = desc.bpp[p] / 8;
++        data->type = (desc.flags & MP_IMGFLAG_TYPE_FLOAT)
++                            ? PL_FMT_FLOAT
++                            : (use_uint ? PL_FMT_UINT : PL_FMT_UNORM);
++    }
++
++    if (any_padded && !out_bits)
++        return 0;
++
++    return desc.num_planes;
++}
++
++/**
++ * Uploads an `mp_image` to a `pl_frame`.
++ * @param ra The rendering abstraction context.
++ * @param out_frame The output `pl_frame`.
++ * @param img The input `mp_image`.
++ * @return True on success, false on failure.
++ */
++bool upload_mp_image_to_pl_frame(struct ra_next *ra, struct pl_frame *out_frame,
++                                        const struct mp_image *img)
++{
++    // Initialize the frame with color space and crop metadata.
++    *out_frame = (struct pl_frame){
++        .color = img->params.color,
++        .repr = img->params.repr,
++        .crop = {
++            .x0 = 0, .y0 = 0,
++            .x1 = img->w, .y1 = img->h,
++        },
++    };
++
++    // Convert the mpv format to libplacebo's plane data description.
++    struct pl_plane_data data[4] = {0};
++    int planes = plane_data_from_imgfmt(data, &out_frame->repr.bits, img->imgfmt, false);
++    if (!planes) {
++        mp_msg(ra->log, MSGL_ERR, "Failed to describe image format '%s'\n",
++               mp_imgfmt_to_name(img->imgfmt));
++        return false;
++    }
++
++    out_frame->num_planes = planes;
++
++    // Upload each plane's pixel data to a new GPU texture.
++    for (int n = 0; n < planes; n++) {
++        data[n].width = mp_image_plane_w((struct mp_image *)img, n);
++        data[n].height = mp_image_plane_h((struct mp_image *)img, n);
++        data[n].row_stride = img->stride[n];
++        data[n].pixels = img->planes[n];
++
++        // Let libplacebo handle the texture creation and data upload.
++        if (!pl_upload_plane(ra->gpu, &out_frame->planes[n],
++                             &out_frame->planes[n].texture, &data[n]))
++        {
++            mp_msg(ra->log, MSGL_ERR, "Failed to upload mp_image plane %d\n", n);
++            goto error;
++        }
++    }
++
++    return true;
++
++error:
++    // Clean up any successfully created textures if one fails.
++    ra_pl_cleanup_frame(ra, out_frame);
++    return false;
++}
++
++/**
++ * @brief Resets the renderer by flushing internal caches.
++ * @param ra The rendering abstraction context.
++ */
++void ra_pl_reset(struct ra_next *ra)
++{
++    struct ra_priv *p = (struct ra_priv *)ra;
++    if (p && p->renderer)
++        pl_renderer_flush_cache(p->renderer);
++}
++
++/**
++ * @brief Destroys the rendering abstraction context and all associated resources.
++ * This is the corrected version that fixes the valgrind crash.
++ * @param rap A pointer to the rendering abstraction context pointer. The pointer
++ *            will be set to NULL after destruction to prevent use-after-free.
++ */
++void ra_pl_destroy(struct ra_next **rap)
++{
++    if (!rap || !*rap)
++        return;
++
++    // Correctly dereference the double pointer to get the struct pointer.
++    struct ra_priv *p = (struct ra_priv *)*rap;
++
++    // Destroy the renderer (if any)
++    if (p->renderer) {
++        mp_msg(p->pub.log, MSGL_DEBUG, "ra_pl_destroy: destroying renderer %p\n",
++               (void*)p->renderer);
++        pl_renderer_destroy(&p->renderer);
++    }
++
++    // Finally free the ra_priv block itself
++    mp_msg(p->pub.log, MSGL_DEBUG, "ra_pl_destroy: freeing ra_priv %p\n", (void*)p);
++    talloc_free(p);
++
++    // Nullify the original pointer to prevent dangling pointers.
++    *rap = NULL;
++}
++
++/**
++ * @brief Creates a new libplacebo-based rendering abstraction context.
++ * @param gpu The libplacebo GPU object to use.
++ * @param log The parent mpv logging context.
++ * @param log_pl The libplacebo logging context.
++ * @return A new ra_next context on success, or NULL on failure.
++ */
++struct ra_next *ra_pl_create(pl_gpu gpu, struct mp_log *log, pl_log log_pl)
++{
++    // Allocate the private implementation struct.
++    struct ra_priv *p = talloc_zero(NULL, struct ra_priv);
++    struct ra_next *ra = &p->pub;
++
++    // Initialize public members.
++    ra->gpu = gpu;
++    ra->log = mp_log_new(p, log, "ra-pl"); // Create a sub-logger for this module.
++    p->pl_log = log_pl;
++
++    // Create renderer (needed by the higher-level pl_render_image calls)
++    p->renderer = pl_renderer_create(log_pl, gpu);
++    if (!p->renderer) {
++        talloc_free(p);
++        return NULL;
++    }
++
++    return ra;
++}
+diff --git a/video/out/gpu_next/ra.h b/video/out/gpu_next/ra.h
+new file mode 100644
+index 0000000000000..a6729b97a1fc6
+--- /dev/null
++++ b/video/out/gpu_next/ra.h
+@@ -0,0 +1,88 @@
++#pragma once
++
++#include <libplacebo/gpu.h>                // for pl_gpu, pl_tex, pl_fmt
++#include <libplacebo/log.h>                // for pl_log
++#include <libplacebo/renderer.h>           // for pl_renderer
++#include <libplacebo/utils/frame_queue.h>  // for pl_queue
++#include "stdbool.h"                       // for bool
++
++/* Forward declarations from mpv */
++struct mp_image;
++struct mp_log;
++struct vo;
++
++/* Opaque handle for the frame queue, managed by the RA */
++typedef pl_queue ra_queue;
++
++/* Public RA handle exposed to higher layers (minimal surface). */
++struct ra_next {
++    pl_gpu gpu;
++    struct mpv_global *global;
++    struct mp_log *log;
++};
++
++/* Upload an mp_image into a pl_frame suitable for pl_render_image.
++ * Caller must call ra_cleanup_pl_frame() to free any textures created.
++ * Returns true on success, false on failure. */
++bool ra_upload_mp_image(struct ra_next *ra, struct pl_frame *out_frame,
++                        const struct mp_image *img);
++
++/* Cleanup any textures/resources attached to a pl_frame created by upload. */
++void ra_cleanup_pl_frame(struct ra_next *ra, struct pl_frame *frame);
++
++/* --- New Texture Management Wrappers (prefixed to avoid conflicts) --- */
++pl_tex ra_next_tex_create(struct ra_next *ra, const struct pl_tex_params *params);
++void ra_next_tex_destroy(struct ra_next *ra, pl_tex *tex);
++bool ra_next_tex_recreate(struct ra_next *ra, pl_tex *tex, const struct pl_tex_params *params);
++bool ra_next_tex_upload(struct ra_next *ra, const struct pl_tex_transfer_params *params);
++bool ra_next_tex_download(struct ra_next *ra, const struct pl_tex_transfer_params *params);
++
++/* --- New Frame Queue Wrappers --- */
++ra_queue ra_next_queue_create(struct ra_next *ra);
++void ra_next_queue_destroy(ra_queue *queue);
++void ra_next_queue_push(ra_queue queue, const struct pl_source_frame *frame);
++void ra_next_queue_update(ra_queue queue, struct pl_frame_mix *mix, const struct pl_queue_params *params);
++void ra_next_queue_reset(ra_queue queue);
++
++/* --- New Rendering Wrappers --- */
++bool ra_next_render_image_mix(struct ra_next *ra, const struct pl_frame_mix *mix,
++                         struct pl_frame *target, const struct pl_render_params *params);
++bool ra_next_render_image(struct ra_next *ra, const struct pl_frame *src,
++                     struct pl_frame *target, const struct pl_render_params *params);
++
++/* --- New Utility Wrappers --- */
++pl_fmt ra_next_find_fmt(struct ra_next *ra, enum pl_fmt_type type, int num_comps,
++                   int comp_bits, int alpha_bits, unsigned caps);
++
++
++/* Get the pl_renderer associated with this RA (may be NULL). */
++pl_renderer ra_get_renderer(struct ra_next *ra);
++
++/* Get the raw pl_gpu (for pl_tex_create / pl_tex_download etc). */
++pl_gpu ra_get_gpu(struct ra_next *ra);
++
++/* Flush libplacebo internal caches (wrapper for pl_renderer_flush_cache). */
++void ra_reset(struct ra_next *ra);
++
++/* Create the pl-specific RA implementation. */
++struct ra_next *ra_pl_create(pl_gpu gpu, struct mp_log *log, pl_log log_pl);
++
++/* Destroys the pl-specific RA implementation. */
++void ra_pl_destroy(struct ra_next **rap);
++
++/* Optional helper: let VO set a vo pointer on RA implementation. */
++void ra_pl_set_vo(struct ra_next *ra, struct vo *vo);
++
++/* Return the pl_log associated with the RA (or NULL). */
++pl_log ra_get_pl_log(struct ra_next *ra);
++
++/* Reset the RA (flush caches etc). */
++void ra_pl_reset(struct ra_next *ra);
++
++/* Internal helper: upload an mp_image to a pl_frame (used by ra_upload_mp_image).
++ * This is exposed for use in pl_video_screenshot. */
++bool upload_mp_image_to_pl_frame(struct ra_next *ra, struct pl_frame *out_frame, const struct mp_image *img);
++
++/* Internal helper: cleanup a pl_frame (used by ra_cleanup_pl_frame).
++ * This is exposed for use in pl_video_screenshot. */
++void ra_pl_cleanup_frame(struct ra_next *ra, struct pl_frame *frame);
+diff --git a/video/out/gpu_next/video.c b/video/out/gpu_next/video.c
+new file mode 100644
+index 0000000000000..bb2e15eef39f6
+--- /dev/null
++++ b/video/out/gpu_next/video.c
+@@ -0,0 +1,582 @@
++#include "video.h"
++#include <libplacebo/utils/frame_queue.h>  // for pl_source_frame, pl_queue_...
++#include <stddef.h>                        // for NULL
++#include <stdint.h>                        // for uint64_t, uint32_t, uintptr_t
++#include "assert.h"                        // for assert
++#include "common/common.h"                 // for mp_rect, MPMAX, MP_ARRAY_SIZE
++#include "common/msg.h"                    // for mp_msg, MSGL_ERR, MSGL_WARN
++#include "libplacebo/colorspace.h"         // for pl_color_adjustment, pl_co...
++#include "libplacebo/filters.h"            // for pl_filter_nearest
++#include "libplacebo/gpu.h"                // for pl_tex_params, pl_tex_t
++#include "libplacebo/renderer.h"           // for pl_frame_mix, pl_frame
++#include "sub/draw_bmp.h"                  // for mp_draw_sub_formats
++#include "sub/osd.h"                       // for sub_bitmap, sub_bitmaps
++#include "ta/ta_talloc.h"                  // for talloc_free, talloc_zero
++#include "video/csputils.h"                // for mp_csp_params, mp_csp_equa...
++#include "video/img_format.h"              // for mp_imgfmt
++#include "video/mp_image.h"                // for mp_image, mp_image_params
++#include "video/out/gpu_next/ra.h"         // for ra_next_find_fmt, ra_next_...
++#include "video/out/vo.h"                  // for vo_frame
++
++// Forward declarations
++struct mp_log;
++struct mpv_global;
++struct osd_state;
++
++/**
++ * @brief Holds GPU resources for a single piece of the On-Screen Display (OSD).
++ *
++ * This struct contains a GPU texture (`pl_tex`) and an array of `pl_overlay_part`
++ * which define how different parts of the texture should be drawn on the screen.
++ * This is used for rendering subtitles and other OSD elements.
++ */
++struct pl_video_osd_entry {
++    pl_tex tex;                     // The GPU texture containing the bitmap for this OSD part.
++    struct pl_overlay_part *parts;  // Array of parts describing how to render the texture.
++    int num_parts;                  // The number of parts in the array.
++};
++
++/**
++ * @brief Manages the state for all OSD elements.
++ *
++ * This struct holds arrays for all possible OSD parts and the corresponding
++ * libplacebo overlay structures that will be passed to the renderer.
++ */
++struct pl_video_osd_state {
++    struct pl_video_osd_entry entries[MAX_OSD_PARTS]; // Storage for individual OSD parts.
++    struct pl_overlay overlays[MAX_OSD_PARTS];      // The final overlays to be rendered.
++};
++
++/**
++ * @brief Main structure managing synchronous libplacebo video rendering.
++ *
++ * This struct encapsulates all state needed for rendering video frames
++ * and OSD elements using libplacebo. It includes the frame queue, current
++ * video parameters, OSD resources, and color adjustment state.
++ */
++struct pl_video {
++    struct mp_log *log;
++    struct ra_next *ra;    // The libplacebo rendering abstraction
++    ra_queue queue;        // The frame queue for handling video frames and interpolation.
++    uint64_t last_frame_id;// To avoid pushing duplicate frames into the queue.
++    double last_pts;       // Last presentation timestamp we rendered at, for redraws.
++
++    // Render State
++    struct mp_image_params current_params; // Current video parameters (resolution, colorspace, etc.).
++    struct mp_rect current_dst;            // The current destination rectangle on the target surface.
++    struct osd_state *current_osd_state; // Pointer to the core's logical OSD state.
++
++    // OSD rendering resources
++    struct mp_osd_res osd_res;                  // OSD resolution and aspect ratio information.
++    struct pl_video_osd_state osd_state_storage; // Storage for our GPU resources.
++    pl_fmt osd_fmt[SUBBITMAP_COUNT];             // Cached libplacebo formats for different OSD bitmap types.
++    pl_tex *sub_tex; // Texture pool for OSD textures.
++    int num_sub_tex; // The number of textures in the pool.
++
++    // Color adjustment state
++    struct mp_csp_equalizer_state *video_eq; // Manages brightness, contrast, hue, etc.
++};
++
++/**
++ * @brief Private data attached to each mp_image pushed into the queue.
++ * This allows the static callback functions to access the main pl_video state.
++ */
++struct frame_priv {
++    struct pl_video *p; // A pointer back to the main pl_video engine struct.
++};
++
++/**
++ * @brief Callback to map an mp_image to a pl_frame for rendering.
++ *
++ * This function is called by the queue when it needs to prepare a frame for rendering.
++ * It handles uploading the image data from CPU memory to a GPU texture.
++ * @param gpu The libplacebo GPU handle.
++ * @param tex (unused) A pointer for an older API, not used here.
++ * @param src The source frame from the queue, containing the mp_image.
++ * @param frame The destination `pl_frame` to be populated with GPU texture info.
++ * @return True on success, false on failure.
++ */
++static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src,
++                      struct pl_frame *frame)
++{
++    struct mp_image *mpi = src->frame_data;
++    struct frame_priv *fp = mpi->priv;
++    struct pl_video *p = fp->p;
++
++    // Use the RA helper to upload the mp_image data to a new set of textures
++    // and populate the pl_frame struct with the result.
++    if (!ra_upload_mp_image(p->ra, frame, mpi)) {
++        talloc_free(mpi); // Clean up the mp_image reference on failure
++        return false;
++    }
++
++    // Store a pointer back to the original mp_image. This is used to get a unique
++    // signature for the frame and to access metadata (like colorspace) later.
++    frame->user_data = mpi;
++    return true;
++}
++
++/**
++ * @brief Callback to unmap a pl_frame after it has been rendered.
++ *
++ * This function is called by the queue to free the GPU resources associated
++ * with a frame that is no longer needed for rendering.
++ * @param gpu The libplacebo GPU handle.
++ * @param frame The `pl_frame` containing the GPU textures to be destroyed.
++ * @param src The source frame from the queue.
++ */
++static void unmap_frame(pl_gpu gpu, struct pl_frame *frame,
++                        const struct pl_source_frame *src)
++{
++    struct mp_image *mpi = src->frame_data;
++    struct frame_priv *fp = mpi->priv;
++    struct pl_video *p = fp->p;
++
++    // Use the RA helper to destroy the GPU textures associated with the frame.
++    ra_cleanup_pl_frame(p->ra, frame);
++    // Free the mp_image reference itself.
++    talloc_free(mpi);
++}
++
++/**
++ * @brief Callback to discard a frame that was pushed into the queue but never rendered.
++ *
++ * This is called for frames that are dropped (e.g., due to performance issues).
++ * It frees the CPU-side mp_image without touching the GPU.
++ * @param src The source frame from the queue to be discarded.
++ */
++static void discard_frame(const struct pl_source_frame *src)
++{
++    // We only need to free the mp_image reference, as no GPU resources were created.
++    struct mp_image *mpi = src->frame_data;
++    talloc_free(mpi);
++}
++
++/**
++ * @brief Initializes the synchronous libplacebo rendering engine.
++ * @param global The mpv global context.
++ * @param log The logging context.
++ * @param ra The rendering abstraction context.
++ * @return A pointer to the newly created pl_video engine, or NULL on failure.
++ */
++struct pl_video *pl_video_init(struct mpv_global *global, struct mp_log *log, struct ra_next *ra) {
++    struct pl_video *p = talloc_zero(NULL, struct pl_video);
++    p->log = log;
++    p->ra = ra;
++    p->queue = ra_next_queue_create(ra);
++
++    // Pre-find the texture formats we'll need for OSD bitmaps for efficiency.
++    p->osd_fmt[SUBBITMAP_LIBASS] = ra_next_find_fmt(p->ra, PL_FMT_UNORM, 1, 8, 8, 0);
++    p->osd_fmt[SUBBITMAP_BGRA]   = ra_next_find_fmt(p->ra, PL_FMT_UNORM, 4, 8, 8, 0);
++
++    // Create the state object that tracks brightness, contrast, etc.
++    p->video_eq = mp_csp_equalizer_create(p, global);
++
++    return p;
++}
++
++/**
++ * @brief Shuts down and destroys the rendering engine and its resources.
++ * @param p_ptr A pointer to the pl_video engine pointer to be freed.
++ */
++void pl_video_uninit(struct pl_video **p_ptr) {
++    struct pl_video *p = *p_ptr;
++    if (!p) return;
++
++    ra_next_queue_destroy(&p->queue);
++
++    // Clean up all allocated OSD GPU resources
++    for (int i = 0; i < MP_ARRAY_SIZE(p->osd_state_storage.entries); i++) {
++        struct pl_video_osd_entry *entry = &p->osd_state_storage.entries[i];
++        ra_next_tex_destroy(p->ra, &entry->tex);
++        talloc_free(entry->parts);
++    }
++    for (int i = 0; i < p->num_sub_tex; i++) {
++        ra_next_tex_destroy(p->ra, &p->sub_tex[i]);
++    }
++    talloc_free(p->sub_tex);
++
++    talloc_free(p);
++    *p_ptr = NULL;
++}
++
++/**
++ * @brief Updates the OSD overlays for the current video frame.
++ * @param p The pl_video context.
++ * @param res The OSD resolution.
++ * @param flags The OSD update flags.
++ * @param coords The overlay coordinates.
++ * @param state The current OSD state.
++ * @param frame The video frame to update.
++ * @param src The source image for the frame.
++ */
++static void update_overlays(struct pl_video *p, struct mp_osd_res res,
++                            int flags, enum pl_overlay_coords coords,
++                            struct pl_video_osd_state *state, struct pl_frame *frame,
++                            struct mp_image *src)
++{
++    frame->num_overlays = 0;
++    if (!p->current_osd_state)
++        return;
++
++    // Render the logical OSD state into a list of bitmaps.
++    double pts = src ? src->pts : 0;
++    struct sub_bitmap_list *subs = osd_render(p->current_osd_state, res, pts, flags, mp_draw_sub_formats);
++    if (!subs) return;
++
++    frame->overlays = state->overlays;
++
++    // Iterate through each bitmap and convert it into a libplacebo overlay.
++    for (int n = 0; n < subs->num_items; n++) {
++        const struct sub_bitmaps *item = subs->items[n];
++        if (!item->num_parts || !item->packed)
++            continue;
++
++        struct pl_video_osd_entry *entry = &state->entries[item->render_index];
++        pl_fmt tex_fmt = p->osd_fmt[item->format];
++
++        // Reuse a texture from the pool if available.
++        if (!entry->tex)
++            MP_TARRAY_POP(p->sub_tex, p->num_sub_tex, &entry->tex);
++
++        // Recreate the texture if its size needs to change.
++        bool ok = ra_next_tex_recreate(p->ra, &entry->tex, &(struct pl_tex_params) {
++            .format = tex_fmt,
++            .w = MPMAX(item->packed_w, entry->tex ? entry->tex->params.w : 0),
++            .h = MPMAX(item->packed_h, entry->tex ? entry->tex->params.h : 0),
++            .host_writable = true,
++            .sampleable = true,
++        });
++        if (!ok) {
++            mp_msg(p->log, MSGL_ERR, "Failed recreating OSD texture!\n");
++            break;
++        }
++
++        // Upload the new bitmap data to the GPU texture.
++        ok = ra_next_tex_upload(p->ra, &(struct pl_tex_transfer_params) {
++            .tex        = entry->tex,
++            .rc         = { .x1 = item->packed_w, .y1 = item->packed_h, },
++            .row_pitch  = item->packed->stride[0],
++            .ptr        = item->packed->planes[0],
++        });
++        if (!ok) {
++            mp_msg(p->log, MSGL_ERR, "Failed uploading OSD texture!\n");
++            break;
++        }
++
++        entry->num_parts = 0;
++        talloc_free(entry->parts);
++        entry->parts = talloc_array(p, struct pl_overlay_part, item->num_parts);
++
++        // Convert each sub-bitmap part into a pl_overlay_part.
++        for (int i = 0; i < item->num_parts; i++) {
++            const struct sub_bitmap *b = &item->parts[i];
++            if (b->dw == 0 || b->dh == 0)
++                continue;
++            uint32_t c = b->libass.color;
++            struct pl_overlay_part part = {
++                .src = { b->src_x, b->src_y, b->src_x + b->w, b->src_y + b->h },
++                .dst = { b->x, b->y, b->x + b->dw, b->y + b->dh },
++                .color = {
++                    (c >> 24) / 255.0f,
++                    ((c >> 16) & 0xFF) / 255.0f,
++                    ((c >> 8) & 0xFF) / 255.0f,
++                    (255 - (c & 0xFF)) / 255.0f,
++                }
++            };
++            entry->parts[entry->num_parts++] = part;
++        }
++
++        // Create the final pl_overlay structure for rendering.
++        struct pl_overlay *ol = &state->overlays[frame->num_overlays++];
++        *ol = (struct pl_overlay) {
++            .tex = entry->tex,
++            .parts = entry->parts,
++            .num_parts = entry->num_parts,
++            .color = { .primaries = PL_COLOR_PRIM_BT_709, .transfer = PL_COLOR_TRC_SRGB },
++            .coords = coords,
++        };
++
++        // Set blending modes based on the OSD bitmap format.
++        if (item->format == SUBBITMAP_BGRA) {
++            ol->mode = PL_OVERLAY_NORMAL;
++            ol->repr.alpha = PL_ALPHA_PREMULTIPLIED;
++            if (src) ol->color = src->params.color;
++        } else if (item->format == SUBBITMAP_LIBASS) {
++            ol->mode = PL_OVERLAY_MONOCHROME;
++            ol->repr.alpha = PL_ALPHA_INDEPENDENT;
++            if (src && item->video_color_space) ol->color = src->params.color;
++        }
++    }
++
++    talloc_free(subs);
++}
++
++/**
++ * @brief Main rendering function for a single video frame.
++ * @param p The pl_video engine context.
++ * @param frame The mpv frame to render, containing the current image.
++ * @param target_tex The destination GPU texture to render to.
++ */
++void pl_video_render(struct pl_video *p, struct vo_frame *frame, pl_tex target_tex)
++{
++    // Describe the target surface for libplacebo.
++    struct pl_frame target_frame = {
++        .num_planes = 1,
++        .planes[0] = { .texture = target_tex, .components = 4, .component_mapping = {0,1,2,3} },
++        .crop = { .x0 = p->current_dst.x0, .y0 = p->current_dst.y0, .x1 = p->current_dst.x1, .y1 = p->current_dst.y1 },
++        .color = pl_color_space_srgb,
++        .repr = pl_color_repr_rgb,
++    };
++
++    // The libmpv VO provides one new frame at a time in frame->current.
++    // We check the frame_id to avoid pushing duplicates.
++    if (frame && frame->current && frame->frame_id > p->last_frame_id) {
++        struct mp_image *mpi = mp_image_new_ref(frame->current);
++        // Attach our private data to the image for the callbacks.
++        struct frame_priv *fp = talloc_zero(mpi, struct frame_priv);
++        fp->p = p;
++        mpi->priv = fp;
++
++        // Push the frame into the queue with its callbacks.
++        ra_next_queue_push(p->queue, &(struct pl_source_frame) {
++            .pts = mpi->pts,
++            .frame_data = mpi,
++            .map = map_frame,
++            .unmap = unmap_frame,
++            .discard = discard_frame,
++        });
++
++        p->last_frame_id = frame->frame_id;
++    }
++
++    // If this is a redraw request, frame->current will be NULL. In that case,
++    // we reuse the last known PTS to query the queue for the correct frame.
++    double target_pts = (frame && frame->current) ? frame->current->pts : p->last_pts;
++    p->last_pts = target_pts;
++
++    struct pl_frame_mix queue_mix = {0};
++    struct pl_queue_params qparams = *pl_queue_params(.pts = target_pts);
++
++    ra_next_queue_update(p->queue, &queue_mix, &qparams);
++
++    // To render OSD, we need a representative source frame to get color space info.
++    // The first frame in the mix is a perfect candidate.
++    struct mp_image *representative_img = NULL;
++    if (queue_mix.num_frames > 0 && queue_mix.frames) {
++        representative_img = queue_mix.frames[0]->user_data;
++    }
++
++    // Manually build the final mix for the renderer, including the signatures.
++    // We need a local array to hold the signature data. 32 is a safe upper bound.
++    uint64_t signatures[32];
++    assert(queue_mix.num_frames < MP_ARRAY_SIZE(signatures));
++    for (int i = 0; i < queue_mix.num_frames; i++) {
++        // Use the mp_image pointer as a unique signature for caching.
++        signatures[i] = (uintptr_t)queue_mix.frames[i]->user_data;
++    }
++    struct pl_frame_mix mix = queue_mix;
++    mix.signatures = signatures;
++
++    // Generate and attach OSD overlays to the target frame. If mix.num_frames is 0,
++    // representative_img will be NULL, and update_overlays will correctly render
++    // OSD against a black background.
++    update_overlays(p, p->osd_res, 0, PL_OVERLAY_COORDS_DST_FRAME,
++                   &p->osd_state_storage, &target_frame, representative_img);
++
++    // For a simple, non-interpolating backend, we can assume the display
++    // frame's duration is equivalent to one source frame (1.0 in normalized time).
++    mix.vsync_duration = 1.0f;
++
++    // Prepare the rendering parameters for libplacebo
++    struct pl_render_params params = {
++        .upscaler = &pl_filter_nearest,
++        .downscaler = &pl_filter_nearest,
++    };
++
++    // Declare a local struct to hold the color adjustment values.
++    struct pl_color_adjustment color_adj;
++
++    // Query the current brightness/contrast/etc values from the equalizer
++    struct mp_csp_params cparams = MP_CSP_PARAMS_DEFAULTS;
++    mp_csp_equalizer_state_get(p->video_eq, &cparams);
++
++    // Fill our local struct with the values.
++    color_adj.brightness = cparams.brightness;
++    color_adj.contrast   = cparams.contrast;
++    color_adj.hue        = cparams.hue;
++    color_adj.saturation = cparams.saturation;
++    color_adj.gamma      = cparams.gamma;
++
++    // Point the render params' pointer to our local struct.
++    params.color_adjustment = &color_adj;
++
++    // Render the mix. libplacebo handles the empty mix case (no video) correctly.
++    if (!ra_next_render_image_mix(p->ra, &mix, &target_frame, &params)) {
++        mp_msg(p->log, MSGL_ERR, "Rendering failed.\n");
++    }
++}
++
++ /**
++  * @brief Takes a screenshot of the current video frame.
++  * @param ctx The render_backend context.
++  * @param frame The video frame to capture.
++  * @param args The screenshot arguments.
++  */
++struct mp_image *pl_video_screenshot(struct pl_video *p, struct vo_frame *frame)
++{
++    if (!p || !p->ra || !frame || !frame->current) {
++        mp_msg(p->log, MSGL_WARN, "pl_video_screenshot: invalid arguments\n");
++        return NULL;
++    }
++
++    struct mp_image *res = NULL;
++    struct pl_frame source_frame = {0};
++    pl_tex fbo = NULL;
++
++    // Upload the mp_image to a pl_frame via the RA helper.
++    if (!ra_upload_mp_image(p->ra, &source_frame, frame->current)) {
++        mp_msg(p->log, MSGL_ERR, "pl_video_screenshot: failed to upload source image\n");
++        return NULL;
++    }
++
++    // Find an 8-bit RGBA renderable + host-readable format.
++    pl_fmt fbo_fmt = ra_next_find_fmt(p->ra, PL_FMT_UNORM, 4, 8, 8,
++                                 PL_FMT_CAP_RENDERABLE | PL_FMT_CAP_HOST_READABLE);
++    if (!fbo_fmt) {
++        mp_msg(p->log, MSGL_ERR, "pl_video_screenshot: failed to find screenshot format\n");
++        goto done;
++    }
++
++    // Create a temporary renderable, host-readable texture sized to the source.
++    int w = frame->current->w;
++    int h = frame->current->h;
++    fbo = ra_next_tex_create(p->ra, pl_tex_params(
++        .w = w,
++        .h = h,
++        .format = fbo_fmt,
++        .renderable = true,
++        .host_readable = true
++    ));
++    if (!fbo) {
++        mp_msg(p->log, MSGL_ERR, "pl_video_screenshot: failed to create temporary texture\n");
++        goto done;
++    }
++
++    // Describe the target as an sRGB SDR frame (so libplacebo performs tone-mapping).
++    struct pl_frame target_frame = {
++        .num_planes = 1,
++        .planes[0] = {
++            .texture = fbo,
++            .components = 4,
++            .component_mapping = {0, 1, 2, 3},
++        },
++        .color = pl_color_space_srgb,
++        .repr = pl_color_repr_rgb,
++    };
++
++    // Define the OSD canvas size to match the video frame for the screenshot.
++    struct mp_osd_res osd_res = {
++        .w = frame->current->w,
++        .h = frame->current->h,
++        .display_par = 1.0, // Screenshots have square pixels
++    };
++
++    // Generate and attach OSD/subtitle overlays to the screenshot's target frame.
++    update_overlays(p, osd_res, 0, PL_OVERLAY_COORDS_DST_FRAME,
++                    &p->osd_state_storage, &target_frame, frame->current);
++
++    const struct pl_render_params params = {
++        .upscaler = &pl_filter_nearest,
++        .downscaler = &pl_filter_nearest,
++    };
++
++    if (!ra_next_render_image(p->ra, &source_frame, &target_frame, &params)) {
++        mp_msg(p->log, MSGL_ERR, "pl_video_screenshot: rendering failed\n");
++        goto done;
++    }
++
++    // Allocate an mp_image for RGBA result and download the texture into it.
++    res = mp_image_alloc(IMGFMT_RGBA, w, h);
++    if (!res) {
++        mp_msg(p->log, MSGL_ERR, "pl_video_screenshot: failed to allocate mp_image\n");
++        goto done;
++    }
++
++    bool ok = ra_next_tex_download(p->ra, &(struct pl_tex_transfer_params){
++        .tex = fbo,
++        .ptr = res->planes[0],
++        .row_pitch = res->stride[0],
++    });
++
++    if (!ok) {
++        mp_msg(p->log, MSGL_ERR, "pl_video_screenshot: texture download failed\n");
++        talloc_free(res);
++        res = NULL;
++        goto done;
++    }
++
++done:
++    if (fbo)
++        ra_next_tex_destroy(p->ra, &fbo);
++
++    ra_cleanup_pl_frame(p->ra, &source_frame);
++
++    return res;
++}
++
++/**
++ * @brief Informs the engine that the video parameters have changed.
++ * @param p The pl_video engine context.
++ * @param params The new image parameters.
++ */
++void pl_video_reconfig(struct pl_video *p, const struct mp_image_params *params) {
++    if (params)
++        p->current_params = *params;
++}
++
++/**
++ * @brief Informs the engine that the output viewport has been resized.
++ * @param p The pl_video engine context.
++ * @param dst The new destination rectangle.
++ * @param osd The new OSD resolution information.
++ */
++void pl_video_resize(struct pl_video *p, const struct mp_rect *dst, const struct mp_osd_res *osd) {
++    if (dst)
++        p->current_dst = *dst;
++    if (osd)
++        p->osd_res = *osd;
++}
++
++/**
++ * @brief Provides the engine with the current On-Screen Display state.
++ * @param p The pl_video engine context.
++ * @param osd A pointer to the current OSD state.
++ */
++void pl_video_update_osd(struct pl_video *p, struct osd_state *osd) {
++    p->current_osd_state = osd;
++}
++
++/**
++ * @brief Informs the engine that it should flush internal caches.
++ * @param p The pl_video engine context.
++ */
++void pl_video_reset(struct pl_video *p) {
++    if (!p || !p->ra) return;
++    ra_pl_reset(p->ra);
++    ra_next_queue_reset(p->queue); // Also reset the frame queue.
++    p->last_frame_id = 0;
++    p->last_pts = 0;
++}
++
++/**
++ * @brief Asks the engine if a specific image format is supported.
++ * @param p The pl_video engine context.
++ * @param imgfmt The image format to check.
++ * @return True if the format is likely supported, false otherwise.
++ */
++bool pl_video_check_format(struct pl_video *p, int imgfmt) {
++    // For simplicity, we assume libplacebo can handle it.
++    // A more robust implementation might query libplacebo's capabilities.
++    return true;
++}
+diff --git a/video/out/gpu_next/video.h b/video/out/gpu_next/video.h
+new file mode 100644
+index 0000000000000..0f62ee2e94a2a
+--- /dev/null
++++ b/video/out/gpu_next/video.h
+@@ -0,0 +1,63 @@
++#pragma once
++
++#include "stdbool.h"         // for bool
++#include <libplacebo/gpu.h>  // for pl_gpu, pl_tex
++
++// Forward declarations
++struct mp_image_params;
++struct mp_log;
++struct mp_osd_res;
++struct mp_rect;
++struct mpv_global;
++struct osd_state;
++struct ra_next;
++struct vo_frame;
++
++/**
++ * Initializes the rendering engine.
++ */
++struct pl_video *pl_video_init(struct mpv_global *global, struct mp_log *log, struct ra_next *ra);
++
++/**
++ * Shuts down and destroys the rendering engine.
++ */
++void pl_video_uninit(struct pl_video **p_ptr);
++
++/**
++ * Synchronously renders a video frame to a display target using libplacebo.
++ */
++void pl_video_render(struct pl_video *p, struct vo_frame *frame, pl_tex target_tex);
++
++/**
++ * Synchronously renders `frame` into an sRGB temporary and returns a newly
++ * allocated mp_image (RGBA) with the result. Caller must free the returned
++ * mp_image with talloc_free() or mp_image_free if available.
++ *
++ * Returns NULL on failure.
++ */
++struct mp_image *pl_video_screenshot(struct pl_video *p, struct vo_frame *frame);
++
++/**
++ * Informs the engine that the video parameters have changed.
++ */
++void pl_video_reconfig(struct pl_video *p, const struct mp_image_params *params);
++
++/**
++ * Informs the engine that the output viewport has been resized.
++ */
++// void pl_video_resize(struct pl_video *p, const struct mp_rect *dst);
++void pl_video_resize(struct pl_video *p, const struct mp_rect *dst, const struct mp_osd_res *osd);
++/**
++ * Provides the engine with the current On-Screen Display state.
++ */
++void pl_video_update_osd(struct pl_video *p, struct osd_state *osd);
++
++/**
++ * Informs the engine that it should flush libplacebo's internal caches.
++ */
++void pl_video_reset(struct pl_video *p);
++
++/**
++ * Asks the engine if a specific image format is supported.
++ */
++bool pl_video_check_format(struct pl_video *p, int imgfmt);
+diff --git a/video/out/vo_libmpv.c b/video/out/vo_libmpv.c
+index a91016df4f4d6..5f19eb33110dd 100644
+--- a/video/out/vo_libmpv.c
++++ b/video/out/vo_libmpv.c
+@@ -1,31 +1,30 @@
+-#include <assert.h>
+-#include <limits.h>
+-#include <math.h>
+-#include <stdatomic.h>
+-#include <stdbool.h>
+-#include <stdio.h>
+-#include <stdlib.h>
+-#include <string.h>
+-
+-#include "mpv_talloc.h"
+-#include "common/common.h"
+-#include "misc/bstr.h"
+-#include "misc/dispatch.h"
+-#include "common/msg.h"
+-#include "options/m_config.h"
+-#include "options/options.h"
+-#include "aspect.h"
+-#include "dr_helper.h"
+-#include "vo.h"
+-#include "video/mp_image.h"
+-#include "sub/osd.h"
+-#include "osdep/threads.h"
+-#include "osdep/timer.h"
+-
+-#include "common/global.h"
+-#include "player/client.h"
+-
+-#include "libmpv.h"
++#include <math.h>                   // for INFINITY
++#include <stdatomic.h>              // for atomic_load, atomic_bool, atomic_...
++#include <stdbool.h>                // for true, bool, false
++#include <stdint.h>                 // for int64_t, intptr_t, uint64_t, uint...
++#include <stdlib.h>                 // for NULL, abs
++#include <string.h>                 // for strcmp
++#include "aspect.h"                 // for mp_get_src_dst_rects
++#include "common/common.h"          // for mp_rect
++#include "common/global.h"          // for mpv_global
++#include "common/msg.h"             // for MP_VERBOSE, MP_STATS, mp_log_new
++#include "config.h"                 // for HAVE_MACOS_COCOA_CB
++#include "dr_helper.h"              // for dr_helper_acquire_thread, dr_help...
++#include "libmpv.h"                 // for render_backend, render_backend_fns
++#include "misc/dispatch.h"          // for mp_dispatch_queue_process, mp_dis...
++#include "misc/mp_assert.h"         // for mp_assert
++#include "mpv/client.h"             // for mpv_error, mpv_handle
++#include "mpv/render.h"             // for mpv_render_context, mpv_render_pa...
++#include "options/m_config_core.h"  // for m_config_cache_alloc, m_config_ca...
++#include "options/options.h"        // for vo_sub_opts
++#include "osdep/threads.h"          // for mp_mutex_unlock, mp_mutex_lock
++#include "osdep/timer.h"            // for mp_time_ns, MP_TIME_MS_TO_NS
++#include "player/client.h"          // for mp_set_main_render_context, kill_...
++#include "sub/osd.h"                // for mp_osd_res
++#include "ta/ta_talloc.h"           // for talloc_free, talloc_zero, TA_FREEP
++#include "video/img_format.h"       // for mp_imgfmt
++#include "video/mp_image.h"         // for mp_image_params
++#include "vo.h"                     // for vo, vo_frame, mp_voctrl, vo_frame...
+ 
+ #if HAVE_MACOS_COCOA_CB
+ #include "osdep/mac/app_bridge.h"
+@@ -111,11 +110,10 @@ struct mpv_render_context {
+     struct mp_vo_opts *vo_opts;
+ };
+ 
+-const struct render_backend_fns *render_backends[] = {
+-    &render_backend_gpu,
+-    &render_backend_sw,
+-    NULL
+-};
++// Forward declare the available render backends
++extern const struct render_backend_fns render_backend_gpu;
++extern const struct render_backend_fns render_backend_gpu_next;
++extern const struct render_backend_fns render_backend_sw;
+ 
+ static void update(struct mpv_render_context *ctx)
+ {
+@@ -184,6 +182,27 @@ int mpv_render_context_create(mpv_render_context **res, mpv_handle *mpv,
+     if (GET_MPV_RENDER_PARAM(params, MPV_RENDER_PARAM_ADVANCED_CONTROL, int, 0))
+         ctx->advanced_control = true;
+ 
++    char *backend_name = get_mpv_render_param(params, MPV_RENDER_PARAM_BACKEND, "");
++    const struct render_backend_fns **render_backends;
++
++    if (backend_name && strcmp(backend_name, "gpu-next") == 0) {
++        MP_VERBOSE(ctx, "Using gpu-next backend.\n");
++        static const struct render_backend_fns* backends[] = {
++            &render_backend_gpu_next,
++            &render_backend_sw,
++            NULL
++        };
++        render_backends = backends;
++    } else {
++        MP_VERBOSE(ctx, "Using default gpu backend.\n");
++        static const struct render_backend_fns* backends[] = {
++            &render_backend_gpu,
++            &render_backend_sw,
++            NULL
++        };
++        render_backends = backends;
++    }
++
+     int err = MPV_ERROR_NOT_IMPLEMENTED;
+     for (int n = 0; render_backends[n]; n++) {
+         ctx->renderer = talloc_zero(NULL, struct render_backend);

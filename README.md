@@ -107,7 +107,7 @@ Run:
 ```
 
 This script links mpv against the patched FFmpeg prefix from the previous step and installs it into a separate mpv prefix.
-It also applies the local mpv patch stack used to keep `mpv v0.40.0` building cleanly against `FFmpeg 8.0.1` (for example, the ARIB caption profile macro rename from `FF_PROFILE_*` to `AV_PROFILE_*`).
+It also applies the local mpv patch stack on top of `mpv v0.41.0`, including a vendored `libmpv` `gpu-next` backend patch derived from [mpv-player/mpv#16818](https://github.com/mpv-player/mpv/pull/16818) for Dolby Vision Profile 5 experiments in IINA.
 
 Default output:
 
@@ -217,9 +217,9 @@ Execution order:
   - tunes FFmpeg's `libuavs3d` wrapper thread selection for Apple Silicon so the default auto-thread path does not underutilize the decoder
   - improves the out-of-box AVS3 decode throughput of the distributed build without requiring end users to pass manual `-threads` overrides
 
-- `tools/patches/mpv/0001-ffmpeg-8-arib-caption-profile-macros.patch`
-  - updates `mpv v0.40.0` ARIB caption profile references from the removed `FF_PROFILE_*` names to `FFmpeg 8.0.1`'s `AV_PROFILE_*` names
-  - keeps the bundled mpv build compatible with the FFmpeg 8 migration without requiring an mpv version bump
+- `tools/patches/mpv/0001-vo_libmpv-introduce-gpu-next-render-backend.patch`
+  - vendors the current draft of [mpv-player/mpv#16818](https://github.com/mpv-player/mpv/pull/16818) into the local mpv patch stack
+  - adds `MPV_RENDER_PARAM_BACKEND="gpu-next"` support to `vo_libmpv`, which is the missing upstream piece needed for IINA to experiment with `gpu-next` on the `libmpv` render API path
 
 - `tools/patches/uavs3d/0001-arm64-neon-accelerate-10bit-output-conversion.patch`
   - adds an AArch64 NEON fast path for the 10-bit output conversion stage in `uavs3d`
@@ -267,7 +267,7 @@ Defined in `tools/common.sh`:
 - `WORK_ROOT=.work`
 - `ARTIFACT_ROOT=artifacts`
 - `FFMPEG_VERSION=8.0.1`
-- `MPV_REF=v0.40.0`
+- `MPV_REF=v0.41.0`
 - `LICENSE_FLAVOR=gpl`
 - `TARGET_ARCH=arm64`
 - `FFMPEG_PREFIX=$WORK_ROOT/ffmpeg-prefix`
@@ -296,7 +296,7 @@ Common outputs include:
 
 - `ffmpeg-cli-bundle-macos-arm64-gpl-ffmpeg-8.0.1.zip`
   - CLI test bundle for direct AVS+ / AVS2 decoder and filter validation
-- `iina-mpv-bundle-macos-arm64-gpl-ffmpeg-8.0.1-mpv-v0.40.0.zip`
+- `iina-mpv-bundle-macos-arm64-gpl-ffmpeg-8.0.1-mpv-v0.41.0.zip`
   - dylib bundle for IINA / `deps/lib`
 - `ffmpeg-cli-bundle-manifest.txt`
   - dependency report for the CLI bundle

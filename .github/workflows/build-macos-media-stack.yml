@@ -17,7 +17,7 @@ env:
   FFMPEG_VERSION: '8.0.1'
   LICENSE_FLAVOR: 'gpl'
   TARGET_ARCH: 'arm64'
-  MPV_REF: 'v0.40.0'
+  MPV_REF: 'v0.41.0'
   BREW_PACKAGES: >-
     meson ninja pkg-config cmake nasm sdl2
     mujs luajit lua libass libarchive rubberband uchardet
