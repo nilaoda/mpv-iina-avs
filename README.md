@@ -220,7 +220,8 @@ Execution order:
 - `tools/patches/mpv/0001-vo_libmpv-introduce-gpu-next-render-backend.patch`
   - vendors the current draft of [mpv-player/mpv#16818](https://github.com/mpv-player/mpv/pull/16818) into the local mpv patch stack
   - adds `MPV_RENDER_PARAM_BACKEND="gpu-next"` support to `vo_libmpv`, which is the missing upstream piece needed for IINA to experiment with `gpu-next` on the `libmpv` render API path
-  - also carries local follow-up fixes in this repository, including `MPV_RENDER_PARAM_FLIP_Y` handling and macOS `VideoToolbox` direct rendering / screenshot interop for the `libmpv` OpenGL path
+  - also carries local follow-up fixes in this repository, including `MPV_RENDER_PARAM_FLIP_Y` handling, `MPV_RENDER_PARAM_ICC_PROFILE` forwarding, mpv scaler / tone-mapping option mapping, and macOS `VideoToolbox` direct rendering / screenshot interop for the `libmpv` OpenGL path
+  - reuses imported `VideoToolbox` GL textures across frames on macOS so the `gpu-next` direct-render path avoids per-frame texture churn and the associated CPU overhead
 
 - `tools/patches/uavs3d/0001-arm64-neon-accelerate-10bit-output-conversion.patch`
   - adds an AArch64 NEON fast path for the 10-bit output conversion stage in `uavs3d`

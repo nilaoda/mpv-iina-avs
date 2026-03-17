@@ -510,8 +510,11 @@ index 0000000000000..31c0cb50bc986
 +    bool flip = *(int *)get_mpv_render_param(params, MPV_RENDER_PARAM_FLIP_Y,
 +                                             &(int){0});
 +
++    int depth = *(int *)get_mpv_render_param(params, MPV_RENDER_PARAM_DEPTH,
++                                             &(int){0});
++
 +    // Render the video frame.
-+    pl_video_render(p->video_engine, frame, target_tex, flip);
++    pl_video_render(p->video_engine, frame, target_tex, flip, depth);
 +
 +    // Destroy the temporary wrapper texture via the RA.
 +    ra_next_tex_destroy(p->context->ra, &target_tex);
@@ -637,7 +640,21 @@ index 0000000000000..31c0cb50bc986
 + */
 +static int set_parameter(struct render_backend *ctx, mpv_render_param param)
 +{
-+    return MPV_ERROR_NOT_IMPLEMENTED;
++    struct priv *p = ctx->priv;
++    if (!p || !p->video_engine)
++        return MPV_ERROR_UNINITIALIZED;
++
++    switch (param.type) {
++    case MPV_RENDER_PARAM_ICC_PROFILE: {
++        mpv_byte_array *icc = param.data;
++        if (!icc)
++            return MPV_ERROR_INVALID_PARAMETER;
++        return pl_video_set_icc_profile(p->video_engine, icc->data, icc->size)
++            ? 0 : MPV_ERROR_GENERIC;
++    }
++    default:
++        return MPV_ERROR_NOT_IMPLEMENTED;
++    }
 +}
 +
 +/*
@@ -1281,9 +1298,11 @@ new file mode 100644
 index 0000000000000..bb2e15eef39f6
 --- /dev/null
 +++ b/video/out/gpu_next/video.c
-@@ -0,0 +1,762 @@
+@@ -0,0 +1,1229 @@
 +#include "video.h"
 +#include <libavutil/buffer.h>              // for AVBufferRef
++#include <libplacebo/options.h>            // for pl_options, pl_options_alloc
++#include <libplacebo/shaders/icc.h>        // for pl_icc_update, pl_icc_object
 +#include <libplacebo/utils/frame_queue.h>  // for pl_source_frame, pl_queue_...
 +#include <stddef.h>                        // for NULL
 +#include <stdint.h>                        // for uint64_t, uint32_t, uintptr_t
@@ -1300,12 +1319,15 @@ index 0000000000000..bb2e15eef39f6
 +#if HAVE_GL && defined(PL_HAVE_OPENGL)
 +#include "libplacebo/opengl.h"             // for pl_opengl_wrap, pl_opengl_get
 +#endif
++#include "options/m_config.h"              // for m_config_cache_alloc
++#include "options/m_option.h"              // for m_opt_choice_str
 +#include "sub/draw_bmp.h"                  // for mp_draw_sub_formats
 +#include "sub/osd.h"                       // for sub_bitmap, sub_bitmaps
 +#include "ta/ta_talloc.h"                  // for talloc_free, talloc_zero
 +#include "video/csputils.h"                // for mp_csp_params, mp_csp_equa...
 +#include "video/img_format.h"              // for mp_imgfmt
 +#include "video/mp_image.h"                // for mp_image, mp_image_params
++#include "video/out/gpu/video.h"           // for gl_video_opts, gl_video_conf
 +#include "video/out/gpu_next/ra.h"         // for ra_next_find_fmt, ra_next_...
 +#include "video/out/opengl/gl_headers.h"   // for GL_R8, GL_RG, GL_R16, ...
 +#include "video/out/vo.h"                  // for vo_frame
@@ -1321,6 +1343,16 @@ index 0000000000000..bb2e15eef39f6
 +struct mp_log;
 +struct mpv_global;
 +struct osd_state;
++
++struct scaler_params {
++    struct pl_filter_config config;
++};
++
++struct vt_texture_pool_entry {
++    unsigned int textures[PL_MAX_PLANES];
++    int num_textures;
++    bool in_use;
++};
 +
 +/**
 + * @brief Holds GPU resources for a single piece of the On-Screen Display (OSD).
@@ -1359,6 +1391,13 @@ index 0000000000000..bb2e15eef39f6
 +    ra_queue queue;        // The frame queue for handling video frames and interpolation.
 +    uint64_t last_frame_id;// To avoid pushing duplicate frames into the queue.
 +    double last_pts;       // Last presentation timestamp we rendered at, for redraws.
++    struct m_config_cache *opts_cache;
++    pl_log pllog;
++    pl_options pars;
++    pl_icc_object icc_profile;
++    struct pl_icc_params icc_params;
++    struct scaler_params scalers[SCALER_COUNT];
++    enum pl_color_levels output_levels;
 +
 +    // Render State
 +    struct mp_image_params current_params; // Current video parameters (resolution, colorspace, etc.).
@@ -1374,6 +1413,8 @@ index 0000000000000..bb2e15eef39f6
 +
 +    // Color adjustment state
 +    struct mp_csp_equalizer_state *video_eq; // Manages brightness, contrast, hue, etc.
++    struct vt_texture_pool_entry *vt_texture_pool;
++    int num_vt_texture_pool;
 +};
 +
 +/**
@@ -1385,6 +1426,7 @@ index 0000000000000..bb2e15eef39f6
 +    bool vt_mapped;
 +    unsigned int vt_textures[PL_MAX_PLANES];
 +    int vt_num_textures;
++    struct vt_texture_pool_entry *vt_pool_entry;
 +};
 +
 +/**
@@ -1435,6 +1477,279 @@ index 0000000000000..bb2e15eef39f6
 +    }
 +}
 +
++static const struct pl_filter_config *map_scaler(struct pl_video *p,
++                                                 enum scaler_unit unit)
++{
++    const struct pl_filter_preset fixed_scalers[] = {
++        { "bilinear",     &pl_filter_bilinear },
++        { "bicubic_fast", &pl_filter_bicubic },
++        { "nearest",      &pl_filter_nearest },
++        { "oversample",   &pl_filter_oversample },
++        {0},
++    };
++
++    const struct pl_filter_preset fixed_frame_mixers[] = {
++        { "linear",       &pl_filter_bilinear },
++        { "oversample",   &pl_filter_oversample },
++        {0},
++    };
++
++    const struct pl_filter_preset *fixed_presets =
++        unit == SCALER_TSCALE ? fixed_frame_mixers : fixed_scalers;
++
++    const struct gl_video_opts *opts = p->opts_cache->opts;
++    const struct scaler_config *cfg = &opts->scaler[unit];
++    if (cfg->kernel.function == SCALER_INHERIT)
++        cfg = &opts->scaler[SCALER_SCALE];
++
++    const char *kernel_name =
++        m_opt_choice_str(cfg->kernel.functions, cfg->kernel.function);
++    if (!kernel_name)
++        return &pl_filter_bilinear;
++
++    for (int i = 0; fixed_presets[i].name; i++) {
++        if (strcmp(kernel_name, fixed_presets[i].name) == 0)
++            return fixed_presets[i].filter;
++    }
++
++    mp_msg(p->log, MSGL_WARN, "gpu-next: unsupported scaler '%s', using bilinear\n",
++           kernel_name);
++    return &pl_filter_bilinear;
++}
++
++static void update_render_options(struct pl_video *p)
++{
++    if (!p || !p->pars || !p->opts_cache)
++        return;
++
++    m_config_cache_update(p->opts_cache);
++
++    pl_options pars = p->pars;
++    const struct gl_video_opts *opts = p->opts_cache->opts;
++
++    pars->params.skip_anti_aliasing = !opts->correct_downscaling;
++    pars->params.disable_linear_scaling =
++        !opts->linear_downscaling && !opts->linear_upscaling;
++    pars->params.correct_subpixel_offsets = !opts->scaler_resizes_only;
++    pars->params.upscaler = map_scaler(p, SCALER_SCALE);
++    pars->params.downscaler = map_scaler(p, SCALER_DSCALE);
++    pars->params.plane_upscaler = map_scaler(p, SCALER_CSCALE);
++    pars->params.frame_mixer =
++        opts->interpolation ? map_scaler(p, SCALER_TSCALE) : NULL;
++
++    pars->params.sigmoid_params =
++        opts->sigmoid_upscaling ? &pars->sigmoid_params : NULL;
++    pars->sigmoid_params.center = opts->sigmoid_center;
++    pars->sigmoid_params.slope = opts->sigmoid_slope;
++
++    pars->params.peak_detect_params =
++        opts->tone_map.compute_peak >= 0 ? &pars->peak_detect_params : NULL;
++    pars->peak_detect_params.smoothing_period = opts->tone_map.decay_rate;
++    pars->peak_detect_params.scene_threshold_low = opts->tone_map.scene_threshold_low;
++    pars->peak_detect_params.scene_threshold_high = opts->tone_map.scene_threshold_high;
++    pars->peak_detect_params.percentile = opts->tone_map.peak_percentile;
++
++    const struct pl_tone_map_function * const tone_map_funs[] = {
++        [TONE_MAPPING_AUTO]      = &pl_tone_map_auto,
++        [TONE_MAPPING_CLIP]      = &pl_tone_map_clip,
++        [TONE_MAPPING_MOBIUS]    = &pl_tone_map_mobius,
++        [TONE_MAPPING_REINHARD]  = &pl_tone_map_reinhard,
++        [TONE_MAPPING_HABLE]     = &pl_tone_map_hable,
++        [TONE_MAPPING_GAMMA]     = &pl_tone_map_gamma,
++        [TONE_MAPPING_LINEAR]    = &pl_tone_map_linear,
++        [TONE_MAPPING_SPLINE]    = &pl_tone_map_spline,
++        [TONE_MAPPING_BT_2390]   = &pl_tone_map_bt2390,
++        [TONE_MAPPING_BT_2446A]  = &pl_tone_map_bt2446a,
++        [TONE_MAPPING_ST2094_40] = &pl_tone_map_st2094_40,
++        [TONE_MAPPING_ST2094_10] = &pl_tone_map_st2094_10,
++    };
++
++    const struct pl_gamut_map_function * const gamut_modes[] = {
++        [GAMUT_AUTO]       = pl_color_map_default_params.gamut_mapping,
++        [GAMUT_CLIP]       = &pl_gamut_map_clip,
++        [GAMUT_PERCEPTUAL] = &pl_gamut_map_perceptual,
++        [GAMUT_RELATIVE]   = &pl_gamut_map_relative,
++        [GAMUT_SATURATION] = &pl_gamut_map_saturation,
++        [GAMUT_ABSOLUTE]   = &pl_gamut_map_absolute,
++        [GAMUT_DESATURATE] = &pl_gamut_map_desaturate,
++        [GAMUT_DARKEN]     = &pl_gamut_map_darken,
++        [GAMUT_WARN]       = &pl_gamut_map_highlight,
++        [GAMUT_LINEAR]     = &pl_gamut_map_linear,
++    };
++
++    pars->color_map_params.tone_mapping_function = tone_map_funs[opts->tone_map.curve];
++    pars->color_map_params.tone_mapping_param = opts->tone_map.curve_param;
++    if (isnan(pars->color_map_params.tone_mapping_param))
++        pars->color_map_params.tone_mapping_param = 0.0;
++    pars->color_map_params.inverse_tone_mapping = opts->tone_map.inverse;
++    pars->color_map_params.contrast_recovery = opts->tone_map.contrast_recovery;
++    pars->color_map_params.contrast_smoothness = opts->tone_map.contrast_smoothness;
++    pars->color_map_params.visualize_lut = opts->tone_map.visualize;
++    pars->color_map_params.gamut_mapping = gamut_modes[opts->tone_map.gamut_mode];
++
++    pars->params.dither_params = NULL;
++    pars->params.error_diffusion = NULL;
++    switch (opts->dither_algo) {
++    case DITHER_ERROR_DIFFUSION:
++        pars->params.error_diffusion = pl_find_error_diffusion_kernel(opts->error_diffusion);
++        if (!pars->params.error_diffusion) {
++            mp_msg(p->log, MSGL_WARN,
++                   "gpu-next: unknown error diffusion kernel '%s', using blue noise\n",
++                   opts->error_diffusion);
++        }
++        MP_FALLTHROUGH;
++    case DITHER_ORDERED:
++    case DITHER_FRUIT:
++        pars->params.dither_params = &pars->dither_params;
++        pars->dither_params.method = opts->dither_algo == DITHER_ORDERED
++            ? PL_DITHER_ORDERED_FIXED
++            : PL_DITHER_BLUE_NOISE;
++        pars->dither_params.lut_size = opts->dither_size;
++        pars->dither_params.temporal = opts->temporal_dither;
++        break;
++    }
++
++    if (opts->dither_depth < 0) {
++        pars->params.dither_params = NULL;
++        pars->params.error_diffusion = NULL;
++    }
++}
++
++static void update_color_adjustment(struct pl_video *p,
++                                    struct pl_color_adjustment *color_adj)
++{
++    struct mp_csp_params cparams = MP_CSP_PARAMS_DEFAULTS;
++    const struct gl_video_opts *opts = p->opts_cache->opts;
++    mp_csp_equalizer_state_get(p->video_eq, &cparams);
++
++    color_adj->brightness = cparams.brightness;
++    color_adj->contrast   = cparams.contrast;
++    color_adj->hue        = cparams.hue;
++    color_adj->saturation = cparams.saturation;
++    color_adj->gamma      = cparams.gamma * opts->gamma;
++    p->output_levels = cparams.levels_out;
++}
++
++static void apply_target_contrast(struct pl_video *p, struct pl_color_space *color,
++                                  float min_luma)
++{
++    const struct gl_video_opts *opts = p->opts_cache->opts;
++
++    if (!opts->target_contrast) {
++        color->hdr.min_luma = min_luma;
++        return;
++    }
++
++    if (opts->target_contrast == -1) {
++        color->hdr.min_luma = 1e-7;
++        return;
++    }
++
++    pl_color_space_nominal_luma_ex(pl_nominal_luma_params(
++        .color = color,
++        .metadata = PL_HDR_METADATA_HDR10,
++        .scaling = PL_HDR_NITS,
++        .out_max = &color->hdr.max_luma
++    ));
++
++    color->hdr.min_luma = color->hdr.max_luma / opts->target_contrast;
++}
++
++static void apply_target_options(struct pl_video *p, struct pl_frame *target,
++                                 float min_luma, int target_depth)
++{
++    const struct gl_video_opts *opts = p->opts_cache->opts;
++
++    if (p->output_levels)
++        target->repr.levels = p->output_levels;
++    if (opts->target_prim)
++        target->color.primaries = opts->target_prim;
++    if (opts->target_trc)
++        target->color.transfer = opts->target_trc;
++    if (opts->target_peak)
++        target->color.hdr.max_luma = opts->target_peak;
++    if (opts->hdr_reference_white &&
++        !target->color.hdr.max_luma &&
++        !pl_color_transfer_is_hdr(target->color.transfer)) {
++        target->color.hdr.max_luma = opts->hdr_reference_white;
++    }
++
++    if (!target->color.hdr.min_luma)
++        apply_target_contrast(p, &target->color, min_luma);
++
++    if (opts->target_gamut) {
++        const struct pl_raw_primaries *gamut = pl_raw_primaries_get(opts->target_gamut);
++        const struct pl_raw_primaries *container =
++            pl_raw_primaries_get(target->color.primaries);
++        target->color.hdr.prim = pl_primaries_clip(gamut, container);
++    }
++
++    int dither_depth = opts->dither_depth > 0 ? opts->dither_depth : target_depth;
++    if (dither_depth == 0 && !pl_color_transfer_is_hdr(target->color.transfer))
++        dither_depth = 8;
++    if (dither_depth > 0) {
++        struct pl_bit_encoding *tbits = &target->repr.bits;
++        if (!tbits->sample_depth)
++            tbits->sample_depth = dither_depth;
++        if (!tbits->color_depth)
++            tbits->color_depth = tbits->sample_depth;
++        tbits->color_depth += dither_depth - tbits->sample_depth;
++        tbits->sample_depth = dither_depth;
++    }
++
++    if (opts->icc_opts && opts->icc_opts->icc_use_luma) {
++        p->icc_params.max_luma = 0.0f;
++    } else {
++        pl_color_space_nominal_luma_ex(pl_nominal_luma_params(
++            .color    = &target->color,
++            .metadata = PL_HDR_METADATA_HDR10,
++            .scaling  = PL_HDR_NITS,
++            .out_max  = &p->icc_params.max_luma,
++        ));
++    }
++
++    pl_icc_update(p->pllog, &p->icc_profile, NULL, &p->icc_params);
++    target->icc = p->icc_profile;
++}
++
++bool pl_video_set_icc_profile(struct pl_video *p, const void *data, size_t size)
++{
++    if (!p)
++        return false;
++
++    struct pl_icc_profile profile = {
++        .data = data,
++        .len = size,
++    };
++    pl_icc_profile_compute_signature(&profile);
++    return pl_icc_update(p->pllog, &p->icc_profile, &profile, &p->icc_params);
++}
++
++static struct vt_texture_pool_entry *acquire_vt_texture_pool_entry(struct pl_video *p)
++{
++    if (!p)
++        return NULL;
++
++    for (int i = 0; i < p->num_vt_texture_pool; i++) {
++        if (!p->vt_texture_pool[i].in_use) {
++            p->vt_texture_pool[i].in_use = true;
++            return &p->vt_texture_pool[i];
++        }
++    }
++
++    MP_TARRAY_GROW(p, p->vt_texture_pool, p->num_vt_texture_pool);
++    struct vt_texture_pool_entry *entry =
++        &p->vt_texture_pool[p->num_vt_texture_pool++];
++    *entry = (struct vt_texture_pool_entry){ .in_use = true };
++    return entry;
++}
++
++static void release_vt_texture_pool_entry(struct vt_texture_pool_entry *entry)
++{
++    if (entry)
++        entry->in_use = false;
++}
++
 +#if HAVE_GL && defined(PL_HAVE_OPENGL) && (HAVE_VIDEOTOOLBOX_GL || HAVE_IOS_GL)
 +static bool videotoolbox_subfmt_to_gl(enum mp_imgfmt imgfmt, int plane,
 +                                      GLint *out_iformat, GLenum *out_format,
@@ -1481,7 +1796,7 @@ index 0000000000000..bb2e15eef39f6
 +
 +static void cleanup_videotoolbox_frame(struct pl_video *p, struct pl_frame *frame,
 +                                       unsigned int textures[PL_MAX_PLANES],
-+                                       int *num_textures)
++                                       int *num_textures, bool release_textures)
 +{
 +    if (!p || !num_textures)
 +        return;
@@ -1491,11 +1806,13 @@ index 0000000000000..bb2e15eef39f6
 +            pl_tex_destroy(ra_get_gpu(p->ra), &frame->planes[n].texture);
 +    }
 +
-+    if (*num_textures > 0)
++    if (release_textures && *num_textures > 0)
 +        glDeleteTextures(*num_textures, textures);
 +
-+    memset(textures, 0, sizeof(unsigned int) * PL_MAX_PLANES);
-+    *num_textures = 0;
++    if (release_textures) {
++        memset(textures, 0, sizeof(unsigned int) * PL_MAX_PLANES);
++        *num_textures = 0;
++    }
 +}
 +
 +static bool map_videotoolbox_frame(struct pl_video *p, struct mp_image *mpi,
@@ -1534,8 +1851,14 @@ index 0000000000000..bb2e15eef39f6
 +        return false;
 +    }
 +
-+    glGenTextures(frame->num_planes, textures);
-+    *num_textures = frame->num_planes;
++    if (*num_textures != frame->num_planes) {
++        if (*num_textures > 0) {
++            glDeleteTextures(*num_textures, textures);
++            memset(textures, 0, sizeof(unsigned int) * PL_MAX_PLANES);
++        }
++        glGenTextures(frame->num_planes, textures);
++        *num_textures = frame->num_planes;
++    }
 +
 +    for (int n = 0; n < frame->num_planes; n++) {
 +        GLint iformat = 0;
@@ -1589,7 +1912,7 @@ index 0000000000000..bb2e15eef39f6
 +    return true;
 +
 +error:
-+    cleanup_videotoolbox_frame(p, frame, textures, num_textures);
++    cleanup_videotoolbox_frame(p, frame, textures, num_textures, true);
 +    *frame = (struct pl_frame){0};
 +    return false;
 +}
@@ -1616,13 +1939,22 @@ index 0000000000000..bb2e15eef39f6
 +        return false;
 +
 +#if HAVE_GL && defined(PL_HAVE_OPENGL) && (HAVE_VIDEOTOOLBOX_GL || HAVE_IOS_GL)
-+    if (map_videotoolbox_frame(p, mpi, frame, fp->vt_textures,
-+                               &fp->vt_num_textures)) {
++    if (mpi->imgfmt == IMGFMT_VIDEOTOOLBOX && !fp->vt_pool_entry)
++        fp->vt_pool_entry = acquire_vt_texture_pool_entry(p);
++
++    if (map_videotoolbox_frame(p, mpi, frame, fp->vt_pool_entry ? fp->vt_pool_entry->textures : fp->vt_textures,
++                               fp->vt_pool_entry ? &fp->vt_pool_entry->num_textures : &fp->vt_num_textures)) {
++        if (fp->vt_pool_entry) {
++            memcpy(fp->vt_textures, fp->vt_pool_entry->textures, sizeof(fp->vt_textures));
++            fp->vt_num_textures = fp->vt_pool_entry->num_textures;
++        }
 +        fp->vt_mapped = true;
 +        return true;
 +    }
 +
 +    if (mpi->imgfmt == IMGFMT_VIDEOTOOLBOX) {
++        release_vt_texture_pool_entry(fp->vt_pool_entry);
++        fp->vt_pool_entry = NULL;
 +        mp_msg(p->log, MSGL_ERR, "gpu-next: failed to map VideoToolbox frame directly\n");
 +        talloc_free(mpi);
 +        return false;
@@ -1663,8 +1995,13 @@ index 0000000000000..bb2e15eef39f6
 +    // Use the RA helper to destroy the GPU textures associated with the frame.
 +#if HAVE_GL && defined(PL_HAVE_OPENGL) && (HAVE_VIDEOTOOLBOX_GL || HAVE_IOS_GL)
 +    if (fp->vt_mapped) {
-+        cleanup_videotoolbox_frame(p, frame, fp->vt_textures, &fp->vt_num_textures);
++        cleanup_videotoolbox_frame(p, frame,
++                                   fp->vt_pool_entry ? fp->vt_pool_entry->textures : fp->vt_textures,
++                                   fp->vt_pool_entry ? &fp->vt_pool_entry->num_textures : &fp->vt_num_textures,
++                                   !fp->vt_pool_entry);
 +        fp->vt_mapped = false;
++        release_vt_texture_pool_entry(fp->vt_pool_entry);
++        fp->vt_pool_entry = NULL;
 +    } else
 +#endif
 +    {
@@ -1701,6 +2038,7 @@ index 0000000000000..bb2e15eef39f6
 +        return NULL;
 +    p->log = log;
 +    p->ra = ra;
++    p->pllog = ra_get_pl_log(ra);
 +    if (!p->ra) {
 +        talloc_free(p);
 +        return NULL;
@@ -1715,10 +2053,22 @@ index 0000000000000..bb2e15eef39f6
 +    p->osd_fmt[SUBBITMAP_LIBASS] = ra_next_find_fmt(p->ra, PL_FMT_UNORM, 1, 8, 8, 0);
 +    p->osd_fmt[SUBBITMAP_BGRA]   = ra_next_find_fmt(p->ra, PL_FMT_UNORM, 4, 8, 8, 0);
 +
++    p->opts_cache = m_config_cache_alloc(p, global, &gl_video_conf);
++    p->pars = pl_options_alloc(p->pllog);
++    p->icc_params = pl_icc_default_params;
++    if (!p->opts_cache || !p->pars) {
++        ra_next_queue_destroy(&p->queue);
++        pl_options_free(&p->pars);
++        talloc_free(p);
++        return NULL;
++    }
++    update_render_options(p);
++
 +    // Create the state object that tracks brightness, contrast, etc.
 +    p->video_eq = mp_csp_equalizer_create(p, global);
 +    if (!p->video_eq) {
 +        ra_next_queue_destroy(&p->queue);
++        pl_options_free(&p->pars);
 +        talloc_free(p);
 +        return NULL;
 +    }
@@ -1746,6 +2096,16 @@ index 0000000000000..bb2e15eef39f6
 +        ra_next_tex_destroy(p->ra, &p->sub_tex[i]);
 +    }
 +    talloc_free(p->sub_tex);
++#if HAVE_GL && defined(PL_HAVE_OPENGL) && (HAVE_VIDEOTOOLBOX_GL || HAVE_IOS_GL)
++    for (int i = 0; i < p->num_vt_texture_pool; i++) {
++        if (p->vt_texture_pool[i].num_textures > 0)
++            glDeleteTextures(p->vt_texture_pool[i].num_textures,
++                             p->vt_texture_pool[i].textures);
++    }
++#endif
++    talloc_free(p->vt_texture_pool);
++    pl_icc_close(&p->icc_profile);
++    pl_options_free(&p->pars);
 +
 +    talloc_free(p);
 +    *p_ptr = NULL;
@@ -1871,7 +2231,7 @@ index 0000000000000..bb2e15eef39f6
 + * @param target_flip Whether the render target uses inverted Y coordinates.
 + */
 +void pl_video_render(struct pl_video *p, struct vo_frame *frame, pl_tex target_tex,
-+                     bool target_flip)
++                     bool target_flip, int target_depth)
 +{
 +    if (!p || !p->ra || !p->queue || !target_tex)
 +        return;
@@ -1885,7 +2245,6 @@ index 0000000000000..bb2e15eef39f6
 +            .flipped = target_flip,
 +        },
 +        .crop = { .x0 = p->current_dst.x0, .y0 = p->current_dst.y0, .x1 = p->current_dst.x1, .y1 = p->current_dst.y1 },
-+        .color = pl_color_space_srgb,
 +        .repr = pl_color_repr_rgb,
 +    };
 +
@@ -1936,6 +2295,18 @@ index 0000000000000..bb2e15eef39f6
 +        representative_img = queue_mix.frames[0]->user_data;
 +    }
 +
++    update_render_options(p);
++    if (representative_img) {
++        target_frame.color = representative_img->params.color;
++    } else if (p->current_params.imgfmt) {
++        target_frame.color = p->current_params.color;
++    } else {
++        target_frame.color = pl_color_space_srgb;
++    }
++    apply_target_options(p, &target_frame,
++                         representative_img ? representative_img->params.color.hdr.min_luma : 0.0f,
++                         target_depth);
++
 +    // Manually build the final mix for the renderer, including the signatures.
 +    // We need a local array to hold the signature data. 32 is a safe upper bound.
 +    uint64_t signatures[32];
@@ -1958,24 +2329,13 @@ index 0000000000000..bb2e15eef39f6
 +    mix.vsync_duration = 1.0f;
 +
 +    // Prepare the rendering parameters for libplacebo
-+    struct pl_render_params params = {
-+        .upscaler = &pl_filter_nearest,
-+        .downscaler = &pl_filter_nearest,
-+    };
++    struct pl_render_params params = p->pars->params;
 +
 +    // Declare a local struct to hold the color adjustment values.
 +    struct pl_color_adjustment color_adj;
 +
-+    // Query the current brightness/contrast/etc values from the equalizer
-+    struct mp_csp_params cparams = MP_CSP_PARAMS_DEFAULTS;
-+    mp_csp_equalizer_state_get(p->video_eq, &cparams);
-+
-+    // Fill our local struct with the values.
-+    color_adj.brightness = cparams.brightness;
-+    color_adj.contrast   = cparams.contrast;
-+    color_adj.hue        = cparams.hue;
-+    color_adj.saturation = cparams.saturation;
-+    color_adj.gamma      = cparams.gamma;
++    // Fill our local struct with the live equalizer values.
++    update_color_adjustment(p, &color_adj);
 +
 +    // Point the render params' pointer to our local struct.
 +    params.color_adjustment = &color_adj;
@@ -2042,6 +2402,8 @@ index 0000000000000..bb2e15eef39f6
 +        goto done;
 +    }
 +
++    update_render_options(p);
++
 +    // Describe the target as an sRGB SDR frame (so libplacebo performs tone-mapping).
 +    struct pl_frame target_frame = {
 +        .num_planes = 1,
@@ -2065,10 +2427,10 @@ index 0000000000000..bb2e15eef39f6
 +    update_overlays(p, osd_res, 0, PL_OVERLAY_COORDS_DST_FRAME,
 +                    &p->osd_state_storage, &target_frame, frame->current);
 +
-+    const struct pl_render_params params = {
-+        .upscaler = &pl_filter_nearest,
-+        .downscaler = &pl_filter_nearest,
-+    };
++    struct pl_render_params params = p->pars->params;
++    struct pl_color_adjustment color_adj = {0};
++    update_color_adjustment(p, &color_adj);
++    params.color_adjustment = &color_adj;
 +
 +    if (!ra_next_render_image(p->ra, &source_frame, &target_frame, &params)) {
 +        mp_msg(p->log, MSGL_ERR, "pl_video_screenshot: rendering failed\n");
@@ -2101,7 +2463,7 @@ index 0000000000000..bb2e15eef39f6
 +
 +#if HAVE_GL && defined(PL_HAVE_OPENGL) && (HAVE_VIDEOTOOLBOX_GL || HAVE_IOS_GL)
 +    if (mapped_vt) {
-+        cleanup_videotoolbox_frame(p, &source_frame, vt_textures, &vt_num_textures);
++        cleanup_videotoolbox_frame(p, &source_frame, vt_textures, &vt_num_textures, true);
 +    } else
 +#endif
 +    {
@@ -2171,10 +2533,11 @@ new file mode 100644
 index 0000000000000..0f62ee2e94a2a
 --- /dev/null
 +++ b/video/out/gpu_next/video.h
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,70 @@
 +#pragma once
 +
 +#include "stdbool.h"         // for bool
++#include <stddef.h>          // for size_t
 +#include <libplacebo/gpu.h>  // for pl_gpu, pl_tex
 +
 +// Forward declarations
@@ -2201,7 +2564,7 @@ index 0000000000000..0f62ee2e94a2a
 + * Synchronously renders a video frame to a display target using libplacebo.
 + */
 +void pl_video_render(struct pl_video *p, struct vo_frame *frame, pl_tex target_tex,
-+                     bool target_flip);
++                     bool target_flip, int target_depth);
 +
 +/**
 + * Synchronously renders `frame` into an sRGB temporary and returns a newly
@@ -2211,6 +2574,11 @@ index 0000000000000..0f62ee2e94a2a
 + * Returns NULL on failure.
 + */
 +struct mp_image *pl_video_screenshot(struct pl_video *p, struct vo_frame *frame);
++
++/**
++ * Updates the display ICC profile used by the render backend.
++ */
++bool pl_video_set_icc_profile(struct pl_video *p, const void *data, size_t size);
 +
 +/**
 + * Informs the engine that the video parameters have changed.
