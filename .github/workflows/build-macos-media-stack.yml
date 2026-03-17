@@ -21,6 +21,7 @@ env:
   BREW_PACKAGES: >-
     meson ninja pkg-config cmake nasm sdl2
     mujs luajit lua libass libarchive rubberband uchardet
+    frei0r libvidstab
     jpeg-turbo little-cms2
     freetype fontconfig fribidi harfbuzz glib gnutls dav1d
     libbluray libbs2b libssh webp rav1e

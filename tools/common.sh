@@ -82,3 +82,18 @@ require_pkg_config_modules() {
   } >&2
   exit 1
 }
+
+append_pkg_config_flag_prefixes() {
+  local module="$1"
+  local prefix="$2"
+  local value
+
+  while IFS= read -r value; do
+    [[ -n "$value" ]] || continue
+    case "$value" in
+      "$prefix"*)
+        printf '%s\n' "$value"
+        ;;
+    esac
+  done < <("$PKG_CONFIG_BIN" --cflags-only-I --libs-only-L "$module" 2>/dev/null | tr ' ' '\n')
+}
