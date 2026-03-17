@@ -546,6 +546,41 @@ export PKG_CONFIG_PATH="$(join_by : "${PKG_CONFIG_PATH_ENTRIES[@]}")${PKG_CONFIG
 export CPPFLAGS="$(join_by ' ' "${CPPFLAGS_ENTRIES[@]}")${CPPFLAGS:+ $CPPFLAGS}"
 export LDFLAGS="$(join_by ' ' "${LDFLAGS_ENTRIES[@]}")${LDFLAGS:+ $LDFLAGS}"
 
+# Keep the FFmpeg feature set aligned with IINA's official ffmpeg-iina formula where practical.
+# Source: https://github.com/iina/homebrew-mpv-iina/blob/master/ffmpeg-iina.rb
+ffmpeg_common_pkg_modules=(
+  fontconfig
+  freetype2
+  gnutls
+  harfbuzz
+  libass
+  libbluray
+  libbs2b
+  libdav1d
+  libjxl
+  libplacebo
+  libssh
+  libwebp
+  libxml-2.0
+  libzmq
+  rav1e
+  sdl2
+  snappy
+  soxr
+  speex
+  zimg
+)
+ffmpeg_gpl_pkg_modules=(
+  frei0r
+  rubberband
+  vidstab
+)
+
+require_pkg_config_modules "${ffmpeg_common_pkg_modules[@]}"
+if [[ "$LICENSE_FLAVOR" == "gpl" ]]; then
+  require_pkg_config_modules "${ffmpeg_gpl_pkg_modules[@]}"
+fi
+
 log "Configuring FFmpeg"
 pushd "$SOURCE_DIR" >/dev/null
 CONFIGURE_FLAGS=(
@@ -560,18 +595,41 @@ CONFIGURE_FLAGS=(
   --disable-doc
   --disable-debug
   --enable-pic
+  --enable-gnutls
   --enable-videotoolbox
   --enable-vulkan
   --enable-audiotoolbox
   --enable-neon
   --enable-sdl2
   --enable-ffplay
+  --enable-libass
+  --enable-libbluray
+  --enable-libbs2b
+  --enable-libdav1d
+  --enable-libfontconfig
+  --enable-libfreetype
+  --enable-libharfbuzz
+  --enable-libjxl
+  --enable-libplacebo
+  --enable-librav1e
+  --enable-libsnappy
+  --enable-libsoxr
+  --enable-libspeex
+  --enable-libssh
+  --enable-libxml2
+  --enable-libwebp
+  --enable-libzmq
+  --enable-libzimg
+  --disable-libjack
+  --disable-indev=jack
+  --disable-libtesseract
 )
 if [[ "$LICENSE_FLAVOR" == "gpl" ]]; then
   CONFIGURE_FLAGS+=(--enable-gpl --enable-version3)
+  CONFIGURE_FLAGS+=(--enable-frei0r)
+  CONFIGURE_FLAGS+=(--enable-librubberband)
+  CONFIGURE_FLAGS+=(--enable-libvidstab)
 fi
-CONFIGURE_FLAGS+=(--enable-libplacebo)
-CONFIGURE_FLAGS+=(--enable-libdav1d)
 CONFIGURE_FLAGS+=(--enable-libuavs3d)
 if [[ "$ENABLE_LIBARCDAV3A" == true ]]; then
   CONFIGURE_FLAGS+=(--enable-libarcdav3a)
