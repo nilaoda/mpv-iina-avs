@@ -556,7 +556,7 @@ ffmpeg_common_pkg_modules=(
   libass
   libbluray
   libbs2b
-  libdav1d
+  dav1d
   libjxl
   libplacebo
   libssh
@@ -565,7 +565,6 @@ ffmpeg_common_pkg_modules=(
   libzmq
   rav1e
   sdl2
-  snappy
   soxr
   speex
   zimg

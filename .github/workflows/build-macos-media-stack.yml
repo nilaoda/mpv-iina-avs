@@ -23,6 +23,7 @@ env:
     mujs luajit lua libass libarchive rubberband uchardet
     jpeg-turbo little-cms2
     freetype fontconfig fribidi harfbuzz glib gnutls dav1d
+    libbluray libbs2b libssh webp rav1e
     libplacebo shaderc molten-vk vulkan-loader
     jpeg-xl libsamplerate snappy speex libsoxr zeromq zimg
 
