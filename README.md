@@ -155,8 +155,8 @@ Execution order:
   - original source: `https://github.com/maliwen2015/ffmpeg_cavs_dra`
   - purpose: vendors the base AVS / AVS+ / DRA enablement patch stack directly in this repository
   - note: the patch is adapted and maintained locally for `FFmpeg 8.0.1`, so the build no longer fetches `ffmpeg_cavs_dra.patch` during execution
-  - includes the macOS build-compat fixes and the AVS+ field-order / output-flag preservation work that previously lived in separate follow-up patches
-  - keeps the imported `libcavs` / `libdradec` code path usable on current Apple clang while preserving interlaced-output metadata handling
+  - includes the macOS build-compat fixes plus the local AVS+ metadata cleanups needed for current FFmpeg
+  - keeps the imported `libcavs` / `libdradec` code path usable on current Apple clang while preserving reliable progressive / interlaced output tagging
 
 ### Vendored local patches
 
@@ -319,5 +319,5 @@ CI uses the vendored patch stack from this repository directly.
 - the Apple Silicon FFmpeg / `libmpv` / IINA dependency build is reproducible
 - `davs2-10bit` builds successfully and can decode AVS2 10-bit content with the vendored AArch64 NEON optimization stack enabled by default
 - the current Apple Silicon `davs2-10bit` patch stack has been validated against bit-exact decode checks while significantly improving AVS2 10-bit decode throughput in local benchmark runs
-- the AVS+ interlaced field-order / deinterlace stutter issue is fixed in the current patch stack
+- the AVS+ patch stack preserves reliable progressive / interlaced scan tagging for downstream tools
 - AVS2 sequence-display color metadata is now propagated through `davs2-10bit` and FFmpeg, so basic tags such as range, BT.2020 matrix / primaries, and HLG transfer characteristics are visible to downstream players and tools

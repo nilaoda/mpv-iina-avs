@@ -32924,23 +32924,14 @@ index 0000000000000000000000000000000000000000..50c00a79c8acfb7cf0aeff6adfada7a7
 + *
 + ****************************************************************************/
 +
-+static void cavs_finalize_output_frame(AVFrame *frame, const cavs_param *param)
++static void set_frame_props(AVSContext *h, AVFrame *frame)
 +{
-+    frame->pts = param->pts;
-+    frame->pkt_dts = param->dts;
-+    frame->flags &= ~(AV_FRAME_FLAG_INTERLACED | AV_FRAME_FLAG_TOP_FIELD_FIRST);
-+    frame->repeat_pict = 0;
-+    if (!param->output_field_info_valid) {
-+        frame->flags |= AV_FRAME_FLAG_INTERLACED | AV_FRAME_FLAG_TOP_FIELD_FIRST;
-+    } else {
-+        if (param->output_interlaced)
-+            frame->flags |= AV_FRAME_FLAG_INTERLACED;
-+        if (param->output_interlaced && param->output_top_field_first)
-+            frame->flags |= AV_FRAME_FLAG_TOP_FIELD_FIRST;
-+    }
-+    if (param->output_type == 0)
++    frame->pts = h->param.pts;
++    frame->pkt_dts = h->param.dts;
++    frame->flags = h->b_interlaced ? (AV_FRAME_FLAG_INTERLACED | AV_FRAME_FLAG_TOP_FIELD_FIRST) : 0;
++    if (h->param.output_type == 0)
 +        frame->flags |= AV_FRAME_FLAG_KEY;
-+    frame->pict_type = param->output_type + 1;
++    frame->pict_type = h->param.output_type + 1;
 +    frame->duration = 0;
 +}
 +
@@ -33077,7 +33068,7 @@ index 0000000000000000000000000000000000000000..50c00a79c8acfb7cf0aeff6adfada7a7
 +    h->avctx->width  = h->width;
 +    h->avctx->height = h->height;
 +
-+	h->cur->flags = h->b_interlaced ? AV_FRAME_FLAG_INTERLACED : 0;
++	h->cur->flags = h->b_interlaced ? (AV_FRAME_FLAG_INTERLACED | AV_FRAME_FLAG_TOP_FIELD_FIRST) : 0;
 +		
 +    return 0;
 +}
@@ -33273,7 +33264,7 @@ index 0000000000000000000000000000000000000000..50c00a79c8acfb7cf0aeff6adfada7a7
 +                    decoder_get_cur_frame( h->cur, &h->param );
 +                    *got_frame = 1;
 +                    av_frame_move_ref(frame, h->cur);
-+                    cavs_finalize_output_frame(frame, &h->param);
++                    set_frame_props(h, frame);
 +	
 +                    return 0;
 +               }
@@ -33293,7 +33284,7 @@ index 0000000000000000000000000000000000000000..50c00a79c8acfb7cf0aeff6adfada7a7
 +                decoder_get_cur_frame( h->cur, &h->param );
 +                *got_frame = 1;
 +                av_frame_move_ref(frame, h->cur);
-+                cavs_finalize_output_frame(frame, &h->param);
++                set_frame_props(h, frame);
 +            }
 +        }
 +
@@ -33405,7 +33396,7 @@ index 0000000000000000000000000000000000000000..50c00a79c8acfb7cf0aeff6adfada7a7
 +                {
 +                    return ret;
 +                }
-+                cavs_finalize_output_frame(frame, &h->param);
++                set_frame_props(h, frame);
 +            }
 +
 +            break;
