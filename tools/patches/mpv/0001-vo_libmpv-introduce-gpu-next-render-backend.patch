@@ -625,9 +625,9 @@ index 0000000000000..31c0cb50bc986
 +    if (!p || !p->video_engine)
 +        return;
 +
-+    /* Let the pl_video engine perform the screenshot (uploads, tone-mapping,
-+     * render to an sRGB temporary, download). Returns an mp_image* or NULL. */
-+    struct mp_image *img = pl_video_screenshot(p->video_engine, frame);
++    /* Let the pl_video engine perform the screenshot using the same
++     * libplacebo color pipeline as playback. */
++    struct mp_image *img = pl_video_screenshot(p->video_engine, frame, args);
 +    if (img)
 +        args->res = img;
 +}
@@ -2408,7 +2408,8 @@ index 0000000000000..bb2e15eef39f6
 +  * @param frame The video frame to capture.
 +  * @param args The screenshot arguments.
 +  */
-+struct mp_image *pl_video_screenshot(struct pl_video *p, struct vo_frame *frame)
++struct mp_image *pl_video_screenshot(struct pl_video *p, struct vo_frame *frame,
++                                     struct voctrl_screenshot *args)
 +{
 +    if (!p || !p->ra || !frame || !frame->current) {
 +        if (p && p->log)
@@ -2441,24 +2442,39 @@ index 0000000000000..bb2e15eef39f6
 +        return NULL;
 +    }
 +
-+    // Find an 8-bit RGBA renderable + host-readable format.
-+    pl_fmt fbo_fmt = ra_next_find_fmt(p->ra, PL_FMT_UNORM, 4, 8, 8,
-+                                 PL_FMT_CAP_RENDERABLE | PL_FMT_CAP_HOST_READABLE);
-+    if (!fbo_fmt) {
-+        mp_msg(p->log, MSGL_ERR, "pl_video_screenshot: failed to find screenshot format\n");
-+        goto done;
-+    }
-+
-+    // Create a temporary renderable, host-readable texture sized to the source.
 +    int w = frame->current->w;
 +    int h = frame->current->h;
-+    fbo = ra_next_tex_create(p->ra, pl_tex_params(
++    struct mp_osd_res osd_res = {
 +        .w = w,
 +        .h = h,
-+        .format = fbo_fmt,
-+        .renderable = true,
-+        .host_readable = true
-+    ));
++        .display_par = 1.0,
++    };
++
++    if (args && args->scaled && p->osd_res.w > 0 && p->osd_res.h > 0) {
++        w = p->osd_res.w;
++        h = p->osd_res.h;
++        osd_res = p->osd_res;
++    }
++
++    int mpfmt = IMGFMT_RGBA;
++    pl_fmt fbo_fmt = NULL;
++    int requested_depth = args && args->high_bit_depth ? 16 : 8;
++    for (int depth = requested_depth; depth >= 8; depth -= 8) {
++        fbo_fmt = ra_next_find_fmt(p->ra, PL_FMT_UNORM, 4, depth, depth,
++                                   PL_FMT_CAP_RENDERABLE | PL_FMT_CAP_HOST_READABLE);
++        if (!fbo_fmt)
++            continue;
++        mpfmt = depth > 8 ? IMGFMT_RGBA64 : IMGFMT_RGBA;
++        fbo = ra_next_tex_create(p->ra, pl_tex_params(
++            .w = w,
++            .h = h,
++            .format = fbo_fmt,
++            .renderable = true,
++            .host_readable = true
++        ));
++        if (fbo)
++            break;
++    }
 +    if (!fbo) {
 +        mp_msg(p->log, MSGL_ERR, "pl_video_screenshot: failed to create temporary texture\n");
 +        goto done;
@@ -2466,7 +2482,6 @@ index 0000000000000..bb2e15eef39f6
 +
 +    update_render_options(p);
 +
-+    // Describe the target as an sRGB SDR frame (so libplacebo performs tone-mapping).
 +    struct pl_frame target_frame = {
 +        .num_planes = 1,
 +        .planes[0] = {
@@ -2474,22 +2489,53 @@ index 0000000000000..bb2e15eef39f6
 +            .components = 4,
 +            .component_mapping = {0, 1, 2, 3},
 +        },
-+        .color = pl_color_space_srgb,
 +        .repr = pl_color_repr_rgb,
 +    };
 +
-+    // Define the OSD canvas size to match the video frame for the screenshot.
-+    struct mp_osd_res osd_res = {
-+        .w = frame->current->w,
-+        .h = frame->current->h,
-+        .display_par = 1.0, // Screenshots have square pixels
-+    };
++    target_frame.color = get_default_libmpv_target_csp(p);
++    apply_target_options(p, &target_frame, frame->current->params.color.hdr.min_luma,
++                         requested_depth);
 +
-+    // Generate and attach OSD/subtitle overlays to the screenshot's target frame.
-+    update_overlays(p, osd_res, 0, PL_OVERLAY_COORDS_DST_FRAME,
++    const struct gl_video_opts *opts = p->opts_cache->opts;
++    const struct pl_color_space *source_csp = &frame->current->params.color;
++    if (args && args->native_csp && !pl_color_space_is_hdr(source_csp))
++        target_frame.color = *source_csp;
++
++    if (source_csp && target_frame.color.transfer == PL_COLOR_TRC_SRGB &&
++        ((opts->sdr_adjust_gamma == 0 && opts->target_trc == PL_COLOR_TRC_UNKNOWN) ||
++         opts->sdr_adjust_gamma == -1))
++    {
++        switch (source_csp->transfer) {
++        case PL_COLOR_TRC_BT_1886:
++        case PL_COLOR_TRC_GAMMA22:
++        case PL_COLOR_TRC_SRGB:
++            target_frame.color.transfer = source_csp->transfer;
++            break;
++        default:
++            break;
++        }
++    }
++
++    int osd_flags = 0;
++    if (args && !args->subs)
++        osd_flags |= OSD_DRAW_OSD_ONLY;
++    if (args && !args->osd)
++        osd_flags |= OSD_DRAW_SUB_ONLY;
++
++    update_overlays(p, osd_res, osd_flags, PL_OVERLAY_COORDS_DST_FRAME,
 +                    &p->osd_state_storage, &target_frame, frame->current);
 +
 +    struct pl_render_params params = p->pars->params;
++    params.info_callback = NULL;
++    params.skip_caching_single_frame = true;
++    params.preserve_mixing_cache = false;
++    params.frame_mixer = NULL;
++    struct pl_peak_detect_params peak_params;
++    if (params.peak_detect_params) {
++        peak_params = *params.peak_detect_params;
++        params.peak_detect_params = &peak_params;
++        peak_params.allow_delayed = false;
++    }
 +    struct pl_color_adjustment color_adj = {0};
 +    update_color_adjustment(p, &color_adj);
 +    params.color_adjustment = &color_adj;
@@ -2499,12 +2545,20 @@ index 0000000000000..bb2e15eef39f6
 +        goto done;
 +    }
 +
-+    // Allocate an mp_image for RGBA result and download the texture into it.
-+    res = mp_image_alloc(IMGFMT_RGBA, w, h);
++    res = mp_image_alloc(mpfmt, w, h);
 +    if (!res) {
 +        mp_msg(p->log, MSGL_ERR, "pl_video_screenshot: failed to allocate mp_image\n");
 +        goto done;
 +    }
++
++    res->params.color.primaries = target_frame.color.primaries;
++    res->params.color.transfer = target_frame.color.transfer;
++    res->params.repr.levels = target_frame.repr.levels;
++    res->params.color.hdr = target_frame.color.hdr;
++    res->params.light = pl_color_transfer_is_hdr(target_frame.color.transfer)
++        ? (target_frame.color.transfer == PL_COLOR_TRC_HLG ? MP_CSP_LIGHT_SCENE_HLG
++                                                           : MP_CSP_LIGHT_DISPLAY)
++        : MP_CSP_LIGHT_DISPLAY;
 +
 +    bool ok = ra_next_tex_download(p->ra, &(struct pl_tex_transfer_params){
 +        .tex = fbo,
@@ -2632,13 +2686,15 @@ index 0000000000000..0f62ee2e94a2a
 +                     bool target_flip, int target_depth);
 +
 +/**
-+ * Synchronously renders `frame` into an sRGB temporary and returns a newly
-+ * allocated mp_image (RGBA) with the result. Caller must free the returned
-+ * mp_image with talloc_free() or mp_image_free if available.
++ * Synchronously renders `frame` into a temporary GPU target using the same
++ * libplacebo target mapping as playback and returns the downloaded image.
++ * Caller must free the returned mp_image with talloc_free() or mp_image_free
++ * if available.
 + *
 + * Returns NULL on failure.
 + */
-+struct mp_image *pl_video_screenshot(struct pl_video *p, struct vo_frame *frame);
++struct mp_image *pl_video_screenshot(struct pl_video *p, struct vo_frame *frame,
++                                     struct voctrl_screenshot *args);
 +
 +/**
 + * Updates the display ICC profile used by the render backend.
