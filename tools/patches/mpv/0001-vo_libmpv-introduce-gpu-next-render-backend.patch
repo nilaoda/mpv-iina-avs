@@ -1734,6 +1734,28 @@ index 0000000000000..bb2e15eef39f6
 +    target->icc = p->icc_profile;
 +}
 +
++static void infer_target_map_from_source(struct pl_frame *target,
++                                         const struct pl_color_space *source)
++{
++    if (!target || !source || !pl_color_transfer_is_hdr(target->color.transfer))
++        return;
++
++    struct pl_color_space source_csp = *source;
++    struct pl_color_space hint = target->color;
++
++    if (pl_color_transfer_is_hdr(hint.transfer) && !pl_primaries_valid(&hint.hdr.prim))
++        pl_color_space_merge(&hint, source);
++
++    pl_color_space_infer_map(&source_csp, &hint);
++
++    if (!hint.hdr.max_cll)
++        hint.hdr.max_cll = hint.hdr.max_luma;
++    if (hint.hdr.max_fall > hint.hdr.max_cll)
++        hint.hdr.max_fall = 0;
++
++    target->color = hint;
++}
++
 +static struct pl_color_space get_default_libmpv_target_csp(struct pl_video *p)
 +{
 +    if (p && p->icc_profile)
@@ -2382,6 +2404,7 @@ index 0000000000000..bb2e15eef39f6
 +    const struct pl_color_space *source_csp = representative_img
 +        ? &representative_img->params.color
 +        : (p->current_params.imgfmt ? &p->current_params.color : NULL);
++    infer_target_map_from_source(&target_frame, source_csp);
 +    if (source_csp && target_frame.color.transfer == PL_COLOR_TRC_SRGB &&
 +        ((opts->sdr_adjust_gamma == 0 && opts->target_trc == PL_COLOR_TRC_UNKNOWN) ||
 +         opts->sdr_adjust_gamma == -1))
@@ -2530,6 +2553,8 @@ index 0000000000000..bb2e15eef39f6
 +    const struct pl_color_space *source_csp = &frame->current->params.color;
 +    if (args && args->native_csp && !pl_color_space_is_hdr(source_csp))
 +        target_frame.color = *source_csp;
++
++    infer_target_map_from_source(&target_frame, source_csp);
 +
 +    if (source_csp && target_frame.color.transfer == PL_COLOR_TRC_SRGB &&
 +        ((opts->sdr_adjust_gamma == 0 && opts->target_trc == PL_COLOR_TRC_UNKNOWN) ||
