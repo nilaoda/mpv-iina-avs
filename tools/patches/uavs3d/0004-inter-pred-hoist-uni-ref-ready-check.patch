@@ -1,8 +1,8 @@
 diff --git a/source/decore/inter_pred.c b/source/decore/inter_pred.c
-index 6623a58..c72abab 100644
+index 0000000..0000000 100644
 --- a/source/decore/inter_pred.c
 +++ b/source/decore/inter_pred.c
-@@ -280,7 +280,7 @@ void uavs3d_if_cpy(const pel *src, int i_src, pel *dst, int i_dst, int width, in
+@@ -280,7 +280,7 @@
      }
  }
  
@@ -11,7 +11,7 @@ index 6623a58..c72abab 100644
  {
      const s8 (*coeff)[8];
      int dx, dy;
-@@ -302,7 +302,9 @@ void uavs3d_always_inline mc_core_luma(com_pic_t* ref, int i_src, pel *dst, int
+@@ -302,7 +302,9 @@
      x_pos = COM_CLIP3(-MAX_CU_SIZE - 4, max_posx, x_pos);
      y_pos = COM_CLIP3(-MAX_CU_SIZE - 4, max_posy, y_pos);
  
@@ -22,7 +22,7 @@ index 6623a58..c72abab 100644
  
      pel *src = ref->y + y_pos * i_src + x_pos;
  
-@@ -320,7 +322,7 @@ void uavs3d_always_inline mc_core_luma(com_pic_t* ref, int i_src, pel *dst, int
+@@ -320,7 +322,7 @@
      }
  }
  
@@ -31,7 +31,7 @@ index 6623a58..c72abab 100644
  {
      int dx,dy;
      const s8 (*coeff)[4];
-@@ -342,7 +344,9 @@ void uavs3d_always_inline mc_core_chroma(com_pic_t* ref, int i_src, pel *dst, in
+@@ -342,7 +344,9 @@
      x_pos = COM_CLIP3(-(MAX_CU_SIZE >> 1) - 2, max_posx, x_pos);
      y_pos = COM_CLIP3(-(MAX_CU_SIZE >> 1) - 2, max_posy, y_pos);
  
@@ -42,7 +42,7 @@ index 6623a58..c72abab 100644
  
      pel *src = ref->uv + y_pos * i_src + (x_pos << 1);
  
-@@ -360,6 +364,55 @@ void uavs3d_always_inline mc_core_chroma(com_pic_t* ref, int i_src, pel *dst, in
+@@ -360,6 +364,55 @@
      }
  }
  
@@ -98,7 +98,7 @@ index 6623a58..c72abab 100644
  static void uavs3d_always_inline com_mc_uni(com_core_t *core, pel *pred_buf)
  {
      s8 *refi = core->refi;
-@@ -388,6 +441,8 @@ static void uavs3d_always_inline com_mc_uni(com_core_t *core, pel *pred_buf)
+@@ -388,6 +441,8 @@
          int qpel_gmv_x = (x << 2) + mv[lidx][MV_X];
          int qpel_gmv_y = (y << 2) + mv[lidx][MV_Y];
  
@@ -107,7 +107,7 @@ index 6623a58..c72abab 100644
          if (!M32(core->cbfy)) {
              i_dst = pic->stride_luma;
              dst = pic->y + y * i_dst + x;
-@@ -395,7 +450,7 @@ static void uavs3d_always_inline com_mc_uni(com_core_t *core, pel *pred_buf)
+@@ -395,7 +450,7 @@
              i_dst = w;
              dst = pred_buf;
          }
@@ -116,7 +116,7 @@ index 6623a58..c72abab 100644
      }
  
      if (tree_status != TREE_L) {
-@@ -413,7 +468,7 @@ static void uavs3d_always_inline com_mc_uni(com_core_t *core, pel *pred_buf)
+@@ -413,7 +468,7 @@
              dst = pred_buf + blk_dim;
          }
  
@@ -124,4 +124,3 @@ index 6623a58..c72abab 100644
 +        mc_core_chroma_no_check(ref_pic, i_srcc, dst, i_dst, qpel_gmv_x, qpel_gmv_y, w, h >> 1, widx, max_posx >> 1, max_posy >> 1, max_val, 0);
      }
  }
- 
