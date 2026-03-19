@@ -20,7 +20,7 @@ AV3A demuxer/parser/container handling draws from [openharmony/third_party_ffmpe
 - `tools/common.sh`
   - shared environment defaults, paths, and helper functions
 - `tools/build_ffmpeg_prefix_macos.sh`
-  - fetches and patches FFmpeg / `uavs3d` / `davs2-10bit`, then builds the FFmpeg prefix
+  - fetches and patches FFmpeg / `davs2-10bit`, then builds the FFmpeg prefix
 - `tools/package_ffmpeg_cli_bundle_macos.sh`
   - packages a directly testable FFmpeg CLI bundle
 - `tools/build_mpv_macos.sh`
@@ -213,39 +213,11 @@ Execution order:
   - registers AV3A codec IDs, container tags, and MPEG-TS stream type mappings needed for demuxing and raw muxing
   - links against the locally built static AVS3 Audio decoder + binaural renderer (no runtime .so/.dylib dependency; model is embedded via `libavs3_common/model.h`)
 
-- `tools/patches/ffmpeg/0007-libuavs3d-tune-apple-silicon-auto-threads.patch`
-  - tunes FFmpeg's `libuavs3d` wrapper thread selection for Apple Silicon so the default auto-thread path does not underutilize the decoder
-  - improves the out-of-box AVS3 decode throughput of the distributed build without requiring end users to pass manual `-threads` overrides
-
 - `tools/patches/mpv/0001-vo_libmpv-introduce-gpu-next-render-backend.patch`
   - vendors the current draft of [mpv-player/mpv#16818](https://github.com/mpv-player/mpv/pull/16818) into the local mpv patch stack
   - adds `MPV_RENDER_PARAM_BACKEND="gpu-next"` support to `vo_libmpv`, which is the missing upstream piece needed for IINA to experiment with `gpu-next` on the `libmpv` render API path
   - also carries local follow-up fixes in this repository, including `MPV_RENDER_PARAM_FLIP_Y` handling, `MPV_RENDER_PARAM_ICC_PROFILE` forwarding, mpv scaler / tone-mapping option mapping, and macOS `VideoToolbox` direct rendering / screenshot interop for the `libmpv` OpenGL path
   - reuses imported `VideoToolbox` GL textures across frames on macOS so the `gpu-next` direct-render path avoids per-frame texture churn and the associated CPU overhead
-
-- `tools/patches/uavs3d/0001-arm64-neon-accelerate-10bit-output-conversion.patch`
-  - adds an AArch64 NEON fast path for the 10-bit output conversion stage in `uavs3d`
-  - reduces the cost of one of the hottest AVS3 decode-output formatting paths on Apple Silicon
-
-- `tools/patches/uavs3d/0002-arm64-fix-and-enable-asm-10bit-output-conversion.patch`
-  - fixes and enables the assembly-backed 10-bit output conversion path in `uavs3d`
-  - keeps the accelerated conversion path bit-exact while restoring the intended arm64 implementation
-
-- `tools/patches/uavs3d/0003-inter-pred-split-unidirectional-mc-fast-path.patch`
-  - splits out a lighter unidirectional motion-compensation fast path in the inter-prediction pipeline
-  - avoids paying the heavier shared-path overhead in common single-reference prediction cases
-
-- `tools/patches/uavs3d/0004-inter-pred-hoist-uni-ref-ready-check.patch`
-  - hoists a repeated unidirectional reference-readiness check out of the hottest inner path
-  - trims branch and control overhead in inter prediction without changing decode output
-
-- `tools/patches/uavs3d/0005-arm64-use-pair-store-for-hot-inter-pred-temp-writes.patch`
-  - replaces hot temporary inter-prediction writes with more efficient pair stores on arm64
-  - reduces temp-buffer store pressure in a frequently sampled motion-compensation path
-
-- `tools/patches/uavs3d/0006-arm64-conv-fmt-16bit-use-faster-stores.patch`
-  - uses faster arm64 store sequences in the 16-bit output format conversion path
-  - improves a persistent decode-output hotspot while preserving bit-exact output
 
 ## Performance
 
@@ -254,13 +226,6 @@ Current Apple Silicon AVS2 10-bit benchmark status:
 - latest local comparison run shows about `1.48x` decoder speedup
 - current measured average decode time improved from about `~14.2s` to about `~9.6s` in the existing validation workflow
 - the reported result is from a bit-exact-validated comparison, not from a relaxed or output-changing optimization mode
-
-Current Apple Silicon AVS3 benchmark status:
-
-- the distributed FFmpeg build now includes the Apple Silicon `libuavs3d` auto-thread tuning patch plus the accepted local `uavs3d` hot-path optimizations above
-- in the local bit-exact validation workflow, a clean minimal FFmpeg + `uavs3d` baseline versus the full accepted AVS3 patch stack currently shows about `+16.12%` throughput at default auto threads
-- the same clean-versus-patched comparison shows about `+9.82%` throughput at explicit `-threads 4`
-- the reported AVS3 numbers are from bit-exact-validated comparisons and only include patches that were kept after direct end-to-end benchmarking
 
 ## Default environment variables
 
