@@ -7,7 +7,7 @@ This repository maintains its own patch stack. The current approach is:
 Disclaimer: Portions of the decoder source code were obtained from publicly available sources and are included solely for research and educational purposes. They are not licensed for commercial use. If you believe any content infringes your rights, please contact me and I will remove it promptly.
 AV3A demuxer/parser/container handling draws from [openharmony/third_party_ffmpeg](https://github.com/openharmony/third_party_ffmpeg).
 
-- maintain a vendored `FFmpeg 8.0.1` base patch adapted from the original `maliwen2015/ffmpeg_cavs_dra` source patch
+- maintain a vendored `FFmpeg 8.1` base patch adapted from the original `maliwen2015/ffmpeg_cavs_dra` source patch
 - vendor only the additional fixes that are actually needed here under `tools/patches`
 - produce two separate outputs:
   - a dylib bundle for IINA / `libmpv`
@@ -39,7 +39,7 @@ AV3A demuxer/parser/container handling draws from [openharmony/third_party_ffmpe
 - `tools/patches/davs2-10bit/*.patch`
   - vendored `davs2-10bit` patches maintained in this repository, including Apple Silicon AArch64 NEON optimizations for 10-bit decode hot paths
 - `tools/patches/ffmpeg/*.patch`
-  - vendored FFmpeg patch stack maintained in this repository for `FFmpeg 8.0.1`
+  - vendored FFmpeg patch stack maintained in this repository for `FFmpeg 8.1`
 - `tools/patches/mpv/*.patch`
   - vendored mpv compatibility patches maintained in this repository for the selected FFmpeg / mpv combination
   - vendored FFmpeg-side patches maintained in this repository
@@ -56,7 +56,7 @@ Run:
 
 This script:
 
-- downloads and extracts `ffmpeg-8.0.1`
+- downloads and extracts `ffmpeg-8.1`
 - fetches and builds static `uavs3d`
 - builds static AV3A decoder + binaural renderer from the local `Sourcecodeforplayer` checkout (see `AV3A_SOURCE_ROOT`)
 - fetches and builds static `davs2-10bit` when `LICENSE_FLAVOR=gpl`
@@ -151,10 +151,10 @@ Execution order:
 
 ### Base patch
 
-- `tools/patches/ffmpeg/0002-libcavs-add-avs-avsplus-dra-base.patch`
+- `tools/patches/ffmpeg/0001-libcavs-add-avs-avsplus-dra-base.patch`
   - original source: `https://github.com/maliwen2015/ffmpeg_cavs_dra`
   - purpose: vendors the base AVS / AVS+ / DRA enablement patch stack directly in this repository
-  - note: the patch is adapted and maintained locally for `FFmpeg 8.0.1`, so the build no longer fetches `ffmpeg_cavs_dra.patch` during execution
+  - note: the patch is adapted and maintained locally for `FFmpeg 8.1`, so the build no longer fetches `ffmpeg_cavs_dra.patch` during execution
   - includes the macOS build-compat fixes plus the local AVS+ metadata cleanups needed for current FFmpeg
   - keeps the imported `libcavs` / `libdradec` code path usable on current Apple clang while preserving reliable progressive / interlaced output tagging
 
@@ -202,13 +202,13 @@ Execution order:
   - makes `davs2-10bit` parse AVS2 `sequence_display_extension` metadata and export the basic display / color-description fields through its public sequence-header output
   - propagates `sample_range`, `colour_primaries`, `transfer_characteristics`, and `matrix_coefficients` so FFmpeg can tag decoded AVS2 frames correctly
 
-- `tools/patches/ffmpeg/0004-libdavs2-export-sequence-display-color-metadata.patch`
+- `tools/patches/ffmpeg/0002-libdavs2-export-sequence-display-color-metadata.patch`
   - makes FFmpeg's `libdavs2` wrapper consume the additional AVS2 sequence-display metadata exported by the local `davs2-10bit` patch stack
   - maps AVS2 range / primaries / transfer / matrix values onto FFmpeg `AVCodecContext` and `AVFrame` color fields
   - allows downstream tools such as `ffmpeg`, `ffplay`, `mpv`, and IINA to recognize the basic AVS2 HDR / wide-color signalling correctly
-- `tools/patches/ffmpeg/0005-libarcdav3a-add-av3a-audio-vivid-decoder.patch`
+- `tools/patches/ffmpeg/0003-libarcdav3a-add-av3a-audio-vivid-decoder.patch`
   - adds the ArcVideo `libarcdav3a` AV3A (Audio Vivid) decoder glue
-- `tools/patches/ffmpeg/0006-av3a-container-parser-demux.patch`
+- `tools/patches/ffmpeg/0004-av3a-container-parser-demux.patch`
   - adds AV3A container support (parser, demux/mux wiring, and MP4 tag mapping) for Audio Vivid streams
   - registers AV3A codec IDs, container tags, and MPEG-TS stream type mappings needed for demuxing and raw muxing
   - links against the locally built static AVS3 Audio decoder + binaural renderer (no runtime .so/.dylib dependency; model is embedded via `libavs3_common/model.h`)
@@ -233,7 +233,7 @@ Defined in `tools/common.sh`:
 
 - `WORK_ROOT=.work`
 - `ARTIFACT_ROOT=artifacts`
-- `FFMPEG_VERSION=8.0.1`
+- `FFMPEG_VERSION=8.1`
 - `MPV_REF=v0.41.0`
 - `LICENSE_FLAVOR=gpl`
 - `TARGET_ARCH=arm64`
@@ -261,9 +261,9 @@ By default, artifacts are written to `artifacts`
 
 Common outputs include:
 
-- `ffmpeg-cli-bundle-macos-arm64-gpl-ffmpeg-8.0.1.zip`
+- `ffmpeg-cli-bundle-macos-arm64-gpl-ffmpeg-8.1.zip`
   - CLI test bundle for direct AVS+ / AVS2 decoder and filter validation
-- `iina-mpv-bundle-macos-arm64-gpl-ffmpeg-8.0.1-mpv-v0.41.0.zip`
+- `iina-mpv-bundle-macos-arm64-gpl-ffmpeg-8.1-mpv-v0.41.0.zip`
   - dylib bundle for IINA / `deps/lib`
 - `ffmpeg-cli-bundle-manifest.txt`
   - dependency report for the CLI bundle

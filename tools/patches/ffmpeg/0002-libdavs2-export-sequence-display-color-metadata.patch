@@ -1,4 +1,14 @@
+From 83b683accdbc0c2e2a2b4b9e7bf6dd7980c156e9 Mon Sep 17 00:00:00 2001
+From: tmp <tmp@example.com>
+Date: Fri, 20 Mar 2026 09:51:01 +0800
+Subject: [PATCH 2/4] libdavs2: export sequence display color metadata
+
+---
+ libavcodec/libdavs2.c | 73 +++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 73 insertions(+)
+
 diff --git a/libavcodec/libdavs2.c b/libavcodec/libdavs2.c
+index 5a605c3..b092cde 100644
 --- a/libavcodec/libdavs2.c
 +++ b/libavcodec/libdavs2.c
 @@ -22,6 +22,7 @@
@@ -9,7 +19,7 @@ diff --git a/libavcodec/libdavs2.c b/libavcodec/libdavs2.c
  #include "libavutil/cpu.h"
  #include "avcodec.h"
  #include "codec_internal.h"
-@@ -40,6 +41,76 @@
+@@ -40,6 +41,76 @@ typedef struct DAVS2Context {
  
  }DAVS2Context;
  
@@ -86,7 +96,7 @@ diff --git a/libavcodec/libdavs2.c b/libavcodec/libdavs2.c
  static av_cold int davs2_init(AVCodecContext *avctx)
  {
      DAVS2Context *cad = avctx->priv_data;
-@@ -118,6 +189,7 @@
+@@ -88,6 +159,7 @@ static int davs2_dump_frames(AVCodecContext *avctx, davs2_picture_t *pic, int *g
  
          if (headerset->frame_rate_id < 16)
              avctx->framerate = ff_avs2_frame_rate_tab[headerset->frame_rate_id];
@@ -94,7 +104,7 @@ diff --git a/libavcodec/libdavs2.c b/libavcodec/libdavs2.c
          *got_frame = 0;
          return 0;
      }
-@@ -134,6 +206,7 @@
+@@ -134,6 +206,7 @@ static int davs2_dump_frames(AVCodecContext *avctx, davs2_picture_t *pic, int *g
      frame->height    = cad->headerset.height;
      frame->pts       = cad->out_frame.pts;
      frame->format    = avctx->pix_fmt;

@@ -14,7 +14,7 @@ on:
         type: string
 
 env:
-  FFMPEG_VERSION: '8.0.1'
+  FFMPEG_VERSION: '8.1'
   LICENSE_FLAVOR: 'gpl'
   TARGET_ARCH: 'arm64'
   MPV_REF: 'v0.41.0'
