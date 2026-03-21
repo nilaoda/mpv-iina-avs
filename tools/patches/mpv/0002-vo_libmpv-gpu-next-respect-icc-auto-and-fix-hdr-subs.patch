@@ -1,0 +1,88 @@
+diff --git a/video/out/gpu_next/video.c b/video/out/gpu_next/video.c
+--- a/video/out/gpu_next/video.c
++++ b/video/out/gpu_next/video.c
+@@ -380,6 +380,7 @@ static void apply_target_options(struct pl_video *p, struct pl_frame *target,
+                                  float min_luma, int target_depth)
+ {
+     const struct gl_video_opts *opts = p->opts_cache->opts;
++    bool use_icc = opts->icc_opts && opts->icc_opts->profile_auto && p->icc_profile;
+ 
+     if (p->output_levels)
+         target->repr.levels = p->output_levels;
+@@ -418,19 +419,22 @@ static void apply_target_options(struct pl_video *p, struct pl_frame *target,
+         tbits->sample_depth = dither_depth;
+     }
+ 
+-    if (opts->icc_opts && opts->icc_opts->icc_use_luma) {
+-        p->icc_params.max_luma = 0.0f;
+-    } else {
+-        pl_color_space_nominal_luma_ex(pl_nominal_luma_params(
+-            .color    = &target->color,
+-            .metadata = PL_HDR_METADATA_HDR10,
+-            .scaling  = PL_HDR_NITS,
+-            .out_max  = &p->icc_params.max_luma,
+-        ));
+-    }
++    target->icc = NULL;
++    if (use_icc) {
++        if (opts->icc_opts->icc_use_luma) {
++            p->icc_params.max_luma = 0.0f;
++        } else {
++            pl_color_space_nominal_luma_ex(pl_nominal_luma_params(
++                .color    = &target->color,
++                .metadata = PL_HDR_METADATA_HDR10,
++                .scaling  = PL_HDR_NITS,
++                .out_max  = &p->icc_params.max_luma,
++            ));
++        }
+ 
+-    pl_icc_update(p->pllog, &p->icc_profile, NULL, &p->icc_params);
+-    target->icc = p->icc_profile;
++        pl_icc_update(p->pllog, &p->icc_profile, NULL, &p->icc_params);
++        target->icc = p->icc_profile;
++    }
+ }
+ 
+ static void infer_target_map_from_source(struct pl_frame *target,
+@@ -457,7 +461,12 @@ static void infer_target_map_from_source(struct pl_frame *target,
+ 
+ static struct pl_color_space get_default_libmpv_target_csp(struct pl_video *p)
+ {
+-    if (p && p->icc_profile)
++    if (p && p->opts_cache) {
++        const struct gl_video_opts *opts = p->opts_cache->opts;
++        if (opts->icc_opts && opts->icc_opts->profile_auto && p->icc_profile)
++            return p->icc_profile->csp;
++    }
++    if (p && p->icc_profile && !p->opts_cache)
+         return p->icc_profile->csp;
+     return pl_color_space_srgb;
+ }
+@@ -990,11 +999,25 @@ static void update_overlays(struct pl_video *p, struct mp_osd_res res,
+         if (item->format == SUBBITMAP_BGRA) {
+             ol->mode = PL_OVERLAY_NORMAL;
+             ol->repr.alpha = PL_ALPHA_PREMULTIPLIED;
+-            if (src) ol->color = src->params.color;
++            if (src) {
++                ol->color = src->params.color;
++                if (pl_color_transfer_is_hdr(ol->color.transfer) &&
++                    !pl_color_transfer_is_hdr(frame->color.transfer)) {
++                    ol->color.hdr = (struct pl_hdr_metadata) {
++                        .max_luma = PL_COLOR_SDR_WHITE,
++                    };
++                }
++            }
+         } else if (item->format == SUBBITMAP_LIBASS) {
+             ol->mode = PL_OVERLAY_MONOCHROME;
+             ol->repr.alpha = PL_ALPHA_INDEPENDENT;
+-            if (src && item->video_color_space) ol->color = src->params.color;
++            if (src && item->video_color_space && !pl_color_space_is_hdr(&src->params.color))
++                ol->color = src->params.color;
++            if (src && pl_color_transfer_is_hdr(frame->color.transfer)) {
++                ol->color.hdr = (struct pl_hdr_metadata) {
++                    .max_luma = PL_COLOR_SDR_WHITE,
++                };
++            }
+         }
+     }
+ 
