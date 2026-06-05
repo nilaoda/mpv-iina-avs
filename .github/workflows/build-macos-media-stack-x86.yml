@@ -1,0 +1,90 @@
+name: Build macOS libmpv bundle (x86-64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish build outputs to GitHub Releases'
+        required: true
+        type: boolean
+        default: false
+      release_tag:
+        description: 'Release tag to publish to (leave empty to auto-generate when publishing)'
+        required: false
+        type: string
+
+env:
+  FFMPEG_VERSION: '8.1'
+  LICENSE_FLAVOR: 'gpl'
+  TARGET_ARCH: 'x86_64'
+  MPV_REF: 'v0.41.0'
+  BREW_PACKAGES: >-
+    meson ninja pkg-config cmake nasm sdl2
+    mujs luajit lua libass libarchive rubberband uchardet
+    frei0r libvidstab
+    jpeg-turbo little-cms2
+    freetype fontconfig fribidi harfbuzz glib gnutls dav1d
+    libbluray libbs2b libssh webp rav1e
+    libplacebo shaderc molten-vk vulkan-loader
+    jpeg-xl libsamplerate snappy speex libsoxr zeromq zimg
+
+jobs:
+  build-macos-bundle-x86:
+    runs-on: macos-13
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          brew update
+          brew install $BREW_PACKAGES
+
+      - name: Build media stack
+        env:
+          CC: /usr/bin/clang
+          CXX: /usr/bin/clang++
+          AR: /usr/bin/ar
+          RANLIB: /usr/bin/ranlib
+          STRIP: /usr/bin/strip
+          LIBTOOL: /usr/bin/libtool
+        run: |
+          export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH"
+          xcrun --find clang
+          xcrun --find clang++
+          xcrun --find ar
+          xcrun --find ranlib
+          chmod +x tools/*.sh
+          ./tools/build_all_macos.sh
+
+      - name: Compute release metadata
+        if: ${{ inputs.publish_release }}
+        id: release_meta
+        env:
+          INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [[ -n "$INPUT_TAG" ]]; then
+            tag="$INPUT_TAG"
+          else
+            tag="mpv-iina-avs-x86-64-ffmpeg-${FFMPEG_VERSION}-mpv-${MPV_REF}-$(date -u +%Y%m%d-%H%M%S)"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "name=macOS libmpv bundle (x86-64) $tag" >> "$GITHUB_OUTPUT"
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: iina-mpv-bundle-macos-x86-64
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish release
+        if: ${{ inputs.publish_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_meta.outputs.tag }}
+          name: ${{ steps.release_meta.outputs.name }}
+          generate_release_notes: true
+          files: artifacts/*

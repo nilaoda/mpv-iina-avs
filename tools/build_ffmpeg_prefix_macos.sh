@@ -4,6 +4,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 require_cmd curl git cmake make patch clang pkg-config install_name_tool otool libtool
+if [[ "$TARGET_ARCH" == "x86_64" ]]; then
+  require_cmd nasm
+fi
 
 case "$LICENSE_FLAVOR" in
   gpl|lgpl)
@@ -197,6 +200,7 @@ DAVS2_ARM64_DEBLOCK_CHROMA_PATCH_PATH="$LOCAL_PATCH_ROOT/davs2-10bit/0007-add-aa
 DAVS2_ARM64_INTRA_PATCH_PATH="$LOCAL_PATCH_ROOT/davs2-10bit/0008-add-aarch64-neon-intra-basic-10bit.patch"
 DAVS2_ARM64_INTRA_BILINEAR_PATCH_PATH="$LOCAL_PATCH_ROOT/davs2-10bit/0009-add-aarch64-neon-intra-bilinear-10bit.patch"
 DAVS2_SEQ_DISPLAY_COLOR_PATCH_PATH="$LOCAL_PATCH_ROOT/davs2-10bit/0010-export-sequence-display-color-description.patch"
+DAVS2_ASM_FIX_PATCH_PATH="$LOCAL_PATCH_ROOT/davs2-10bit/0011-enable-asm-intrinsics-on-macos.patch"
 DAVS2_ENABLE_EXPERIMENTAL_MC_INTERP="${DAVS2_ENABLE_EXPERIMENTAL_MC_INTERP:-1}"
 if [[ "$TARGET_ARCH" == "arm64" ]]; then
   FFMPEG_EXTRA_CFLAGS_DEFAULT="$(resolve_apple_silicon_extra_cflags_default "${FFMPEG_APPLE_MCPU:-${APPLE_SILICON_DISTRIBUTION_MCPU:-apple-m1}}")"
@@ -208,6 +212,18 @@ if [[ "$TARGET_ARCH" == "arm64" ]]; then
   AV3A_EXTRA_CXXFLAGS_DEFAULT="$(resolve_apple_silicon_extra_cflags_default "${AV3A_APPLE_MCPU:-${APPLE_SILICON_DISTRIBUTION_MCPU:-apple-m1}}")"
   DAVS2_EXTRA_CFLAGS_DEFAULT="$(resolve_davs2_arm64_extra_cflags_default)"
   DAVS2_EXTRA_LDFLAGS_DEFAULT="$(resolve_davs2_arm64_extra_ldflags_default)"
+elif [[ "$TARGET_ARCH" == "x86_64" ]]; then
+  X86_MCPU="${X86_MCPU:-x86-64}"
+  X86_ARCH_FLAG="-arch x86_64"
+  FFMPEG_EXTRA_CFLAGS_DEFAULT="${X86_ARCH_FLAG} -march=${X86_MCPU} -fvectorize -fslp-vectorize"
+  FFMPEG_EXTRA_CXXFLAGS_DEFAULT="$FFMPEG_EXTRA_CFLAGS_DEFAULT"
+  UAVS3D_EXTRA_CFLAGS_DEFAULT="${X86_ARCH_FLAG} -march=${X86_MCPU} -fvectorize -fslp-vectorize"
+  UAVS3D_EXTRA_CXXFLAGS_DEFAULT="$UAVS3D_EXTRA_CFLAGS_DEFAULT"
+  UAVS3D_EXTRA_ASMFLAGS_DEFAULT=""
+  AV3A_EXTRA_CFLAGS_DEFAULT="${X86_ARCH_FLAG}"
+  AV3A_EXTRA_CXXFLAGS_DEFAULT="${X86_ARCH_FLAG}"
+  DAVS2_EXTRA_CFLAGS_DEFAULT=""
+  DAVS2_EXTRA_LDFLAGS_DEFAULT=""
 else
   FFMPEG_EXTRA_CFLAGS_DEFAULT=""
   FFMPEG_EXTRA_CXXFLAGS_DEFAULT=""
@@ -232,7 +248,11 @@ FFMPEG_CAVS_DRA_BASE_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0001-libcavs-add-avs-a
 FFMPEG_DAVS2_COLOR_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0002-libdavs2-export-sequence-display-color-metadata.patch"
 FFMPEG_AV3A_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0003-libarcdav3a-add-av3a-audio-vivid-decoder.patch"
 FFMPEG_AV3A_FORMAT_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0004-av3a-container-parser-demux.patch"
-DAVS2_CONFIGURE_HOST="${DAVS2_CONFIGURE_HOST:-aarch64-apple-darwin}"
+if [[ "$TARGET_ARCH" == "arm64" ]]; then
+  DAVS2_CONFIGURE_HOST="${DAVS2_CONFIGURE_HOST:-aarch64-apple-darwin}"
+else
+  DAVS2_CONFIGURE_HOST="${DAVS2_CONFIGURE_HOST:-x86_64-apple-darwin}"
+fi
 ENABLE_LIBDAVS2=false
 ENABLE_LIBARCDAV3A=false
 SOURCE_BASENAME="ffmpeg-$FFMPEG_VERSION"
@@ -317,6 +337,8 @@ av3a_decoder_cflags=(-O3 -fPIC -std=c99 -Dmain=avs3_decoder_main)
 append_flags_from_env AV3A_EFFECTIVE_EXTRA_CFLAGS av3a_decoder_cflags
 if [[ "$TARGET_ARCH" == "arm64" ]]; then
   av3a_decoder_cflags+=(-DARCH_AARCH64 -DSUPPORT_NEON -fsigned-char)
+elif [[ "$TARGET_ARCH" == "x86_64" ]]; then
+  av3a_decoder_cflags+=(-fsigned-char)
 fi
 av3a_decoder_includes=(
   "-I$AV3A_DECODER_SOURCE_DIR/avs3Decoder/include"
@@ -393,16 +415,20 @@ if [[ "$LICENSE_FLAVOR" == "gpl" ]]; then
 
   davs2_patch_paths=(
     "$DAVS2_PATCH_PATH"
-    "$DAVS2_ARM64_PATCH_PATH"
-    "$DAVS2_ARM64_PRIMITIVES_PATCH_PATH"
   )
-  if [[ "$DAVS2_ENABLE_EXPERIMENTAL_MC_INTERP" == "1" ]]; then
-    davs2_patch_paths+=("$DAVS2_ARM64_MC_INTERP_PATCH_PATH")
-    davs2_patch_paths+=("$DAVS2_ARM64_MC_EXT_PATCH_PATH")
-    davs2_patch_paths+=("$DAVS2_ARM64_DEBLOCK_PATCH_PATH")
-    davs2_patch_paths+=("$DAVS2_ARM64_DEBLOCK_CHROMA_PATCH_PATH")
-    davs2_patch_paths+=("$DAVS2_ARM64_INTRA_PATCH_PATH")
-    davs2_patch_paths+=("$DAVS2_ARM64_INTRA_BILINEAR_PATCH_PATH")
+  if [[ "$TARGET_ARCH" == "arm64" ]]; then
+    davs2_patch_paths+=("$DAVS2_ARM64_PATCH_PATH")
+    davs2_patch_paths+=("$DAVS2_ARM64_PRIMITIVES_PATCH_PATH")
+    if [[ "$DAVS2_ENABLE_EXPERIMENTAL_MC_INTERP" == "1" ]]; then
+      davs2_patch_paths+=("$DAVS2_ARM64_MC_INTERP_PATCH_PATH")
+      davs2_patch_paths+=("$DAVS2_ARM64_MC_EXT_PATCH_PATH")
+      davs2_patch_paths+=("$DAVS2_ARM64_DEBLOCK_PATCH_PATH")
+      davs2_patch_paths+=("$DAVS2_ARM64_DEBLOCK_CHROMA_PATCH_PATH")
+      davs2_patch_paths+=("$DAVS2_ARM64_INTRA_PATCH_PATH")
+      davs2_patch_paths+=("$DAVS2_ARM64_INTRA_BILINEAR_PATCH_PATH")
+    fi
+  else
+    davs2_patch_paths+=("$DAVS2_ASM_FIX_PATCH_PATH")
   fi
   davs2_patch_paths+=("$DAVS2_SEQ_DISPLAY_COLOR_PATCH_PATH")
 
@@ -651,6 +677,11 @@ if [[ -n "$libsoxr_prefix" ]]; then
   fi
 fi
 
+if [[ "$TARGET_ARCH" == "x86_64" ]]; then
+  CPPFLAGS_ENTRIES+=("-arch x86_64")
+  LDFLAGS_ENTRIES+=("-arch x86_64")
+fi
+
 export PKG_CONFIG_PATH="$(join_by : "${PKG_CONFIG_PATH_ENTRIES[@]}")${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 export CPPFLAGS="$(join_by ' ' "${CPPFLAGS_ENTRIES[@]}")${CPPFLAGS:+ $CPPFLAGS}"
 export LDFLAGS="$(join_by ' ' "${LDFLAGS_ENTRIES[@]}")${LDFLAGS:+ $LDFLAGS}"
@@ -674,7 +705,6 @@ CONFIGURE_FLAGS=(
   --enable-videotoolbox
   --enable-vulkan
   --enable-audiotoolbox
-  --enable-neon
   --enable-sdl2
   --enable-ffplay
   --enable-libass
@@ -706,6 +736,9 @@ if [[ "$LICENSE_FLAVOR" == "gpl" ]]; then
   CONFIGURE_FLAGS+=(--enable-libvidstab)
 fi
 CONFIGURE_FLAGS+=(--enable-libuavs3d)
+if [[ "$TARGET_ARCH" == "arm64" ]]; then
+  CONFIGURE_FLAGS+=(--enable-neon)
+fi
 if [[ "$ENABLE_LIBARCDAV3A" == true ]]; then
   CONFIGURE_FLAGS+=(--enable-libarcdav3a)
   CONFIGURE_FLAGS+=(--extra-ldflags="-L$AV3A_INSTALL_ROOT/lib")

@@ -1,6 +1,6 @@
 # mpv-iina-avs
 
-A media-stack build repository for Apple Silicon macOS, focused on producing a reproducible patched FFmpeg + libmpv dependency set for IINA / mpv with AVS / AVS+ / AVS2 / AVS3 support.
+A media-stack build repository for macOS, focused on producing a reproducible patched FFmpeg + libmpv dependency set for IINA / mpv with AVS / AVS+ / AVS2 / AVS3 support. Supports both Apple Silicon (arm64) and Intel (x86-64) targets.
 
 This repository maintains its own patch stack. The current approach is:
 
@@ -37,7 +37,7 @@ AV3A demuxer/parser/container handling draws from [openharmony/third_party_ffmpe
 - `tools/collect_dylibs.rb`
   - collects the `libmpv` dependency set into an IINA-friendly dylib bundle
 - `tools/patches/davs2-10bit/*.patch`
-  - vendored `davs2-10bit` patches maintained in this repository, including Apple Silicon AArch64 NEON optimizations for 10-bit decode hot paths
+  - vendored `davs2-10bit` patches maintained in this repository, including Apple Silicon AArch64 NEON optimizations for 10-bit decode hot paths and x86-64 assembly/intrinsic build fixes
 - `tools/patches/ffmpeg/*.patch`
   - vendored FFmpeg patch stack maintained in this repository for `FFmpeg 8.1`
 - `tools/patches/mpv/*.patch`
@@ -147,6 +147,23 @@ Execution order:
 3. `build_mpv_macos.sh`
 4. `package_iina_bundle_macos.sh`
 
+### Building for x86-64 (Intel)
+
+To build for Intel x86-64 instead of Apple Silicon arm64, set the `TARGET_ARCH` environment variable:
+
+```bash
+TARGET_ARCH=x86_64 ./tools/build_all_macos.sh
+```
+
+This will:
+- cross-compile using `-arch x86_64` flags (works on both arm64 and x86-64 hosts)
+- apply the x86-64 davs2 assembly/intrinsic patches instead of the arm64 NEON patches
+- enable x86 SSE/AVX2 SIMD acceleration for davs2 decoding
+- require `nasm` to be installed (`brew install nasm`)
+- produce x86-64 dylib bundles with appropriate artifact naming
+
+The x86-64 build uses the same FFmpeg and mpv patch stacks as arm64. The davs2 decoder gets SSE128 10-bit acceleration with IDCT/IDWT AVX2 optimizations on x86-64.
+
 ## Patch stack
 
 ### Base patch
@@ -202,6 +219,11 @@ Execution order:
   - makes `davs2-10bit` parse AVS2 `sequence_display_extension` metadata and export the basic display / color-description fields through its public sequence-header output
   - propagates `sample_range`, `colour_primaries`, `transfer_characteristics`, and `matrix_coefficients` so FFmpeg can tag decoded AVS2 frames correctly
 
+- `tools/patches/davs2-10bit/0011-enable-asm-intrinsics-on-macos.patch`
+  - removes the forced `asm="no"` flag in the `davs2-10bit` configure script that blocked all x86 assembly and SIMD intrinsic compilation on macOS
+  - allows x86-64 builds to use SSE128 and AVX2 accelerated code paths (SAO, ALF, deblock, intra-pred, IDCT, IDWT, pixel operations)
+  - only applied on x86-64 builds; arm64 builds use the NEON patches instead
+
 - `tools/patches/ffmpeg/0002-libdavs2-export-sequence-display-color-metadata.patch`
   - makes FFmpeg's `libdavs2` wrapper consume the additional AVS2 sequence-display metadata exported by the local `davs2-10bit` patch stack
   - maps AVS2 range / primaries / transfer / matrix values onto FFmpeg `AVCodecContext` and `AVFrame` color fields
@@ -243,6 +265,10 @@ Defined in `tools/common.sh`:
 
 Useful overrides:
 
+- `TARGET_ARCH`
+  - target architecture: `arm64` (default) or `x86_64`
+- `X86_MCPU`
+  - x86-64 micro-architecture target; default is `x86-64` (baseline). Set to `x86-64-v2`, `x86-64-v3`, etc. for newer instruction sets
 - `LOCAL_PATCH_ROOT`
   - overrides the vendored patch root; default is `tools/patches`
 - `AV3A_GIT_URL` / `AV3A_GIT_REF`
@@ -261,9 +287,10 @@ By default, artifacts are written to `artifacts`
 
 Common outputs include:
 
-- `ffmpeg-cli-bundle-macos-arm64-gpl-ffmpeg-8.1.zip`
+- `ffmpeg-cli-bundle-macos-{arch}-gpl-ffmpeg-8.1.zip`
   - CLI test bundle for direct AVS+ / AVS2 decoder and filter validation
-- `iina-mpv-bundle-macos-arm64-gpl-ffmpeg-8.1-mpv-v0.41.0.zip`
+  - `{arch}` is `arm64` or `x86_64` depending on the build target
+- `iina-mpv-bundle-macos-{arch}-gpl-ffmpeg-8.1-mpv-v0.41.0.zip`
   - dylib bundle for IINA / `deps/lib`
 - `ffmpeg-cli-bundle-manifest.txt`
   - dependency report for the CLI bundle
@@ -272,19 +299,25 @@ Common outputs include:
 
 ## GitHub Actions
 
-The macOS workflow supports manual runs with:
+Two macOS workflows are available, both supporting manual runs with:
 
 - `publish_release`
   - whether to publish a GitHub Release
 - `release_tag`
   - optional custom release tag
 
+Workflows:
+
+- `build-macos-media-stack.yml` — Apple Silicon arm64 build (runs on `macos-14`)
+- `build-macos-media-stack-x86.yml` — Intel x86-64 build (runs on `macos-13`)
+
 CI uses the vendored patch stack from this repository directly.
 
 ## Current status
 
-- the Apple Silicon FFmpeg / `libmpv` / IINA dependency build is reproducible
-- `davs2-10bit` builds successfully and can decode AVS2 10-bit content with the vendored AArch64 NEON optimization stack enabled by default
+- both Apple Silicon (arm64) and Intel (x86-64) FFmpeg / `libmpv` / IINA dependency builds are supported
+- on arm64, `davs2-10bit` builds successfully with the vendored AArch64 NEON optimization stack enabled by default
+- on x86-64, `davs2-10bit` builds with SSE128 10-bit acceleration and AVX2 IDCT/IDWT optimizations; the x86 assembly/intrinsic code path was previously blocked by a forced `asm="no"` flag in the upstream configure, which is now fixed via the 0011 patch
 - the current Apple Silicon `davs2-10bit` patch stack has been validated against bit-exact decode checks while significantly improving AVS2 10-bit decode throughput in local benchmark runs
 - the AVS+ patch stack preserves reliable progressive / interlaced scan tagging for downstream tools
 - AVS2 sequence-display color metadata is now propagated through `davs2-10bit` and FFmpeg, so basic tags such as range, BT.2020 matrix / primaries, and HLG transfer characteristics are visible to downstream players and tools
