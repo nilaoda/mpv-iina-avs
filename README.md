@@ -164,6 +164,8 @@ This will:
 
 The x86-64 build uses the same FFmpeg and mpv patch stacks as arm64. The davs2 decoder gets SSE128 10-bit acceleration with IDCT/IDWT AVX2 optimizations on x86-64.
 
+For local cross-compilation from arm64, ensure Homebrew packages installed under `/usr/local` (x86_64) are available — the build script uses `-arch x86_64` and expects x86_64 libraries in the standard Homebrew prefix.
+
 ## Patch stack
 
 ### Base patch
@@ -309,7 +311,7 @@ Two macOS workflows are available, both supporting manual runs with:
 Workflows:
 
 - `build-macos-media-stack.yml` — Apple Silicon arm64 build (runs on `macos-14`)
-- `build-macos-media-stack-x86.yml` — Intel x86-64 build (runs on `macos-13`)
+- `build-macos-media-stack-x86.yml` — x86-64 build via cross-compilation (runs on `macos-14` arm64 runner with x86_64 Homebrew under Rosetta)
 
 CI uses the vendored patch stack from this repository directly.
 

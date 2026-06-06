@@ -53,8 +53,13 @@ for tool_path in "$CC_BIN" "$CXX_BIN" "$AR_BIN" "$RANLIB_BIN" "$STRIP_BIN" "$LIB
   fi
 done
 
-export CC="$CC_BIN"
-export CXX="$CXX_BIN"
+if [[ "$TARGET_ARCH" == "x86_64" ]]; then
+  export CC="$CC_BIN -arch x86_64"
+  export CXX="$CXX_BIN -arch x86_64"
+else
+  export CC="$CC_BIN"
+  export CXX="$CXX_BIN"
+fi
 export AR="$AR_BIN"
 export RANLIB="$RANLIB_BIN"
 export STRIP="$STRIP_BIN"
@@ -222,8 +227,8 @@ elif [[ "$TARGET_ARCH" == "x86_64" ]]; then
   UAVS3D_EXTRA_ASMFLAGS_DEFAULT=""
   AV3A_EXTRA_CFLAGS_DEFAULT="${X86_ARCH_FLAG}"
   AV3A_EXTRA_CXXFLAGS_DEFAULT="${X86_ARCH_FLAG}"
-  DAVS2_EXTRA_CFLAGS_DEFAULT=""
-  DAVS2_EXTRA_LDFLAGS_DEFAULT=""
+  DAVS2_EXTRA_CFLAGS_DEFAULT="${X86_ARCH_FLAG}"
+  DAVS2_EXTRA_LDFLAGS_DEFAULT="${X86_ARCH_FLAG}"
 else
   FFMPEG_EXTRA_CFLAGS_DEFAULT=""
   FFMPEG_EXTRA_CXXFLAGS_DEFAULT=""
@@ -470,7 +475,7 @@ if [[ "$LICENSE_FLAVOR" == "gpl" ]]; then
   if [[ -n "$DAVS2_EFFECTIVE_EXTRA_LDFLAGS" ]]; then
     davs2_configure_args+=("--extra-ldflags=$DAVS2_EFFECTIVE_EXTRA_LDFLAGS")
   fi
-  if ! CC="$CC_BIN" CXX="$CXX_BIN" AR="$AR_BIN" RANLIB="$RANLIB_BIN" ./configure "${davs2_configure_args[@]}"; then
+  if ! CC="$CC" CXX="$CXX" AR="$AR_BIN" RANLIB="$RANLIB_BIN" ./configure "${davs2_configure_args[@]}"; then
     if [[ -f config.log ]]; then
       echo "===== davs2 config.log (tail 400) =====" >&2
       tail -n 400 config.log >&2
@@ -688,12 +693,12 @@ export LDFLAGS="$(join_by ' ' "${LDFLAGS_ENTRIES[@]}")${LDFLAGS:+ $LDFLAGS}"
 
 log "Configuring FFmpeg"
 pushd "$SOURCE_DIR" >/dev/null
-log "Using Apple toolchain: CC=$CC_BIN CXX=$CXX_BIN AR=$AR_BIN RANLIB=$RANLIB_BIN STRIP=$STRIP_BIN"
+log "Using Apple toolchain: CC=$CC CXX=$CXX AR=$AR_BIN RANLIB=$RANLIB_BIN STRIP=$STRIP_BIN"
 CONFIGURE_FLAGS=(
   --prefix="$FFMPEG_PREFIX"
   --arch="$TARGET_ARCH"
   --target-os=darwin
-  --cc="$CC_BIN"
+  --cc="$CC"
   --pkg-config="$PKG_CONFIG_BIN"
   --enable-shared
   --enable-pthreads

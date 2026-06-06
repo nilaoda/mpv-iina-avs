@@ -18,8 +18,13 @@ MPV_PATCH_ROOT="$SCRIPT_DIR/patches/mpv"
 
 pkg_paths=("$FFMPEG_PREFIX/lib/pkgconfig")
 export PKG_CONFIG_PATH="$(join_by : "${pkg_paths[@]}")${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-export CPPFLAGS="-I$FFMPEG_PREFIX/include${CPPFLAGS:+ $CPPFLAGS}"
-export LDFLAGS="-L$FFMPEG_PREFIX/lib${LDFLAGS:+ $LDFLAGS}"
+if [[ "$TARGET_ARCH" == "x86_64" ]]; then
+  export CPPFLAGS="-arch x86_64 -I$FFMPEG_PREFIX/include${CPPFLAGS:+ $CPPFLAGS}"
+  export LDFLAGS="-arch x86_64 -L$FFMPEG_PREFIX/lib${LDFLAGS:+ $LDFLAGS}"
+else
+  export CPPFLAGS="-I$FFMPEG_PREFIX/include${CPPFLAGS:+ $CPPFLAGS}"
+  export LDFLAGS="-L$FFMPEG_PREFIX/lib${LDFLAGS:+ $LDFLAGS}"
+fi
 
 log "Fetching mpv source"
 rm -rf "$MPV_SOURCE_DIR" "$MPV_BUILD_DIR" "$MPV_PREFIX"
@@ -40,6 +45,10 @@ if [[ -d "$MPV_PATCH_ROOT" ]]; then
 fi
 
 log "Configuring mpv"
+if [[ "$TARGET_ARCH" == "x86_64" ]]; then
+  export CC="clang -arch x86_64"
+  export CXX="clang++ -arch x86_64"
+fi
 meson_flags=(
   setup "$MPV_BUILD_DIR" "$MPV_SOURCE_DIR"
   --prefix "$MPV_PREFIX"

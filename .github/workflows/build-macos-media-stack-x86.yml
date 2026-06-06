@@ -30,16 +30,29 @@ env:
 
 jobs:
   build-macos-bundle-x86:
-    runs-on: macos-13
+    runs-on: macos-14
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install x86_64 Homebrew
+        run: |
+          # Install an x86_64 Homebrew under /usr/local via Rosetta
+          curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh \
+            > /tmp/install-brew-x86.sh
+          arch -x86_64 /bin/bash -c '
+            export NONINTERACTIVE=1
+            export HOMEBREW_PREFIX=/usr/local
+            export HOMEBREW_REPOSITORY=/usr/local/Homebrew
+            /bin/bash /tmp/install-brew-x86.sh
+          '
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+
       - name: Install build dependencies
         run: |
-          brew update
-          brew install $BREW_PACKAGES
+          arch -x86_64 /usr/local/bin/brew update
+          arch -x86_64 /usr/local/bin/brew install $BREW_PACKAGES
 
       - name: Build media stack
         env:
