@@ -52,7 +52,9 @@ jobs:
       - name: Install build dependencies
         run: |
           arch -x86_64 /usr/local/bin/brew update
-          arch -x86_64 /usr/local/bin/brew install $BREW_PACKAGES
+          # --overwrite handles conflicts with system Python symlinks in /usr/local/bin
+          # that point into /Library/Frameworks/Python.framework/
+          arch -x86_64 /usr/local/bin/brew install --overwrite $BREW_PACKAGES
 
       - name: Build media stack
         env:
