@@ -1,4 +1,4 @@
-name: Build macOS libmpv bundle
+name: Build macOS media stack
 
 on:
   workflow_dispatch:
@@ -9,14 +9,13 @@ on:
         type: boolean
         default: false
       release_tag:
-        description: 'Release tag to publish to (leave empty to auto-generate when publishing)'
+        description: 'Release tag (leave empty to auto-generate)'
         required: false
         type: string
 
 env:
   FFMPEG_VERSION: '8.1'
   LICENSE_FLAVOR: 'gpl'
-  TARGET_ARCH: 'arm64'
   MPV_REF: 'v0.41.0'
   BREW_PACKAGES: >-
     meson ninja pkg-config cmake nasm sdl2
@@ -29,17 +28,50 @@ env:
     jpeg-xl libsamplerate snappy speex libsoxr zeromq zimg
 
 jobs:
-  build-macos-bundle:
-    runs-on: macos-14
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+          - arch: x86_64
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install x86_64 Homebrew
+        if: matrix.arch == 'x86_64'
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh \
+            > /tmp/install-brew-x86.sh
+          arch -x86_64 /bin/bash -c '
+            export NONINTERACTIVE=1
+            export HOMEBREW_PREFIX=/usr/local
+            export HOMEBREW_REPOSITORY=/usr/local/Homebrew
+            /bin/bash /tmp/install-brew-x86.sh
+          '
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+
       - name: Install build dependencies
         run: |
-          brew update
-          brew install $BREW_PACKAGES
+          if [[ "${{ matrix.arch }}" == "x86_64" ]]; then
+            for f in /usr/local/bin/*; do
+              if [ -L "$f" ]; then
+                target=$(readlink "$f")
+                case "$target" in
+                  */Python.framework/*) sudo rm -f "$f" ;;
+                esac
+              fi
+            done
+            arch -x86_64 /usr/local/bin/brew update
+            arch -x86_64 /usr/local/bin/brew install --overwrite $BREW_PACKAGES
+          else
+            brew update
+            brew install $BREW_PACKAGES
+          fi
 
       - name: Build media stack
         env:
@@ -49,17 +81,46 @@ jobs:
           RANLIB: /usr/bin/ranlib
           STRIP: /usr/bin/strip
           LIBTOOL: /usr/bin/libtool
+          TARGET_ARCH: ${{ matrix.arch }}
         run: |
-          export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:$PATH"
-          xcrun --find clang
-          xcrun --find clang++
-          xcrun --find ar
-          xcrun --find ranlib
+          if [[ "${{ matrix.arch }}" == "x86_64" ]]; then
+            export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH"
+          else
+            export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:$PATH"
+          fi
           chmod +x tools/*.sh
           ./tools/build_all_macos.sh
 
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: iina-mpv-bundle-macos-${{ matrix.arch }}
+          path: artifacts/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: build
+    runs-on: macos-14
+    if: ${{ inputs.publish_release }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: iina-mpv-bundle-macos-*
+          path: release-files
+          merge-multiple: true
+
+      - name: Filter release files
+        run: |
+          # Remove txt manifests that would collide across arch builds.
+          # They are already bundled inside the zip files.
+          rm -f release-files/*.txt
+          echo "Release files:"
+          ls -la release-files/
+
       - name: Compute release metadata
-        if: ${{ inputs.publish_release }}
         id: release_meta
         env:
           INPUT_TAG: ${{ inputs.release_tag }}
@@ -70,21 +131,12 @@ jobs:
             tag="mpv-iina-avs-ffmpeg-${FFMPEG_VERSION}-mpv-${MPV_REF}-$(date -u +%Y%m%d-%H%M%S)"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "name=macOS libmpv bundle $tag" >> "$GITHUB_OUTPUT"
-
-      - name: Upload bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: iina-mpv-bundle-macos
-          path: artifacts/*
-          if-no-files-found: error
-          retention-days: 14
+          echo "name=macOS media stack $tag" >> "$GITHUB_OUTPUT"
 
       - name: Publish release
-        if: ${{ inputs.publish_release }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_meta.outputs.tag }}
           name: ${{ steps.release_meta.outputs.name }}
           generate_release_notes: true
-          files: artifacts/*
+          files: release-files/*.zip

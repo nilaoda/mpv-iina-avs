@@ -1,0 +1,13 @@
+diff --git a/build/linux/configure b/build/linux/configure
+index ac90f74..cd104fd 100755
+--- a/build/linux/configure
++++ b/build/linux/configure
+@@ -572,8 +572,6 @@ case $host_os in
+         if [ "$pic" = "no" ]; then
+             cc_check "" -mdynamic-no-pic && CFLAGS="$CFLAGS -mdynamic-no-pic"
+         fi
+-        # TODO: Fix compiling error under mac osx (force disabled now)
+-        asm="no"
+         ;;
+     freebsd*)
+         SYS="FREEBSD"
