@@ -51,10 +51,15 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          # Remove system Python symlinks in /usr/local/bin that conflict with
-          # Homebrew python@3.14 (they point into /Library/Frameworks/Python.framework)
-          for f in idle3 pip3 pydoc3 python3 python3-config; do
-            sudo rm -f "/usr/local/bin/$f" "/usr/local/bin/${f}.3" "/usr/local/bin/${f}.3.14"
+          # Remove ALL symlinks in /usr/local/bin that point into
+          # /Library/Frameworks/Python.framework/ (conflicts with brew python@3.14)
+          for f in /usr/local/bin/*; do
+            if [ -L "$f" ]; then
+              target=$(readlink "$f")
+              case "$target" in
+                */Python.framework/*) sudo rm -f "$f" ;;
+              esac
+            fi
           done
           arch -x86_64 /usr/local/bin/brew update
           arch -x86_64 /usr/local/bin/brew install --overwrite $BREW_PACKAGES
