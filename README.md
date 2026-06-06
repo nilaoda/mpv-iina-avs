@@ -301,19 +301,21 @@ Common outputs include:
 
 ## GitHub Actions
 
-Two macOS workflows are available, both supporting manual runs with:
+A single workflow (`build-macos-media-stack.yml`) builds **both arm64 and x86_64** in parallel via matrix strategy. Both use `macos-14` arm64 runners; x86_64 cross-compiles via Rosetta with x86_64 Homebrew.
+
+Inputs:
 
 - `publish_release`
   - whether to publish a GitHub Release
 - `release_tag`
   - optional custom release tag
 
-Workflows:
+The workflow structure:
 
-- `build-macos-media-stack.yml` — Apple Silicon arm64 build (runs on `macos-14`)
-- `build-macos-media-stack-x86.yml` — x86-64 build via cross-compilation (runs on `macos-14` arm64 runner with x86_64 Homebrew under Rosetta)
+1. **build** job (matrix): each architecture builds independently and uploads artifacts
+2. **release** job: collects both arch artifacts and publishes them to a single GitHub Release
 
-CI uses the vendored patch stack from this repository directly.
+Both arch bundles (iina-mpv-bundle + ffmpeg-cli-bundle) end up in the same release, so downstream consumers like `iina-avs` can pull them by tag.
 
 ## Current status
 
