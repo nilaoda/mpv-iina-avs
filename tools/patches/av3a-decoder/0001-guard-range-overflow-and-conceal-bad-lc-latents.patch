@@ -1,0 +1,72 @@
+--- a/libavs3_common/mdct_dequant_decode.c	2026-06-08 01:41:37
++++ b/libavs3_common/mdct_dequant_decode.c	2026-06-08 01:43:23
+@@ -8,7 +8,24 @@
+ #include "avs3_stat_com.h"
+ #include "avs3_prot_com.h"
+ 
++#define AVS3_LC_BASE_LATENT_SANITY_LIMIT 4096
+ 
++static void ConcealLcBaseLatentOutliers(
++    int32_t *baseFlattenLatent,
++    int16_t baseLatentSize
++)
++{
++    for (int16_t i = 0; i < baseLatentSize; i++) {
++        const int32_t value = baseFlattenLatent[i];
++
++        if (value > AVS3_LC_BASE_LATENT_SANITY_LIMIT ||
++            value < -AVS3_LC_BASE_LATENT_SANITY_LIMIT) {
++            baseFlattenLatent[i] = 0;
++        }
++    }
++}
++
++
+ /*
+ Context model decoding process
+ for hyper model, context part
+@@ -385,6 +402,8 @@
+     // perform range decoding
+     RangeDecodeProcess(baseRcHandle, baseFlattenLatent, baseLatentSize, baseCdfIndex, baseBitstream, baseNumBytes);
+ 
++    ConcealLcBaseLatentOutliers(baseFlattenLatent, baseLatentSize);
++
+     // malloc and set quantized latent of base model
+     baseQuantizedLatent = (int32_t *)malloc(sizeof(int32_t) * baseNumLatentEncode * baseNumLatentChannels);
+     for (int16_t i = 0; i < baseNumLatentEncode; i++) {
+--- a/libavs3_common/range_coder.c	2026-06-08 01:41:37
++++ b/libavs3_common/range_coder.c	2026-06-08 01:41:48
+@@ -938,13 +938,24 @@
+ 
+             // decode value for each bit sections
+             uint32_t overflow = 0;
++            int16_t overflowTooWide = 0;
+             for (int32_t j = 0; j < widths; ++j) {
+                 const uint32_t val = RangeDecodeSymbol(&rangeDecoderSt, overflowCdf, overflowCdfSize,
+                     rangeCoderConfig->overflowWidth, input, inputLength, &inputPointer);
+                 // concat each section of overflow
+-                overflow |= val << (j * rangeCoderConfig->overflowWidth);
++                const int32_t shift = j * rangeCoderConfig->overflowWidth;
++                if (shift >= 32) {
++                    overflowTooWide = 1;
++                    continue;
++                }
++                overflow |= val << shift;
+             }
+ 
++            if (overflowTooWide) {
++                value = -rangeCoderConfig->offset[cdfIndex];
++                goto map_value;
++            }
++
+             // map positive values back to integer values
+             value = overflow >> 1;
+             if (overflow & 1) {
+@@ -955,6 +966,7 @@
+             }
+         }
+ 
++map_value:
+         // Map values in 0..max_range range back to original integer range
+         value += rangeCoderConfig->offset[cdfIndex];
+         data[i] = value;

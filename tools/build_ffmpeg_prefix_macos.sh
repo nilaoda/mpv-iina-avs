@@ -253,6 +253,7 @@ FFMPEG_CAVS_DRA_BASE_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0001-libcavs-add-avs-a
 FFMPEG_DAVS2_COLOR_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0002-libdavs2-export-sequence-display-color-metadata.patch"
 FFMPEG_AV3A_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0003-libarcdav3a-add-av3a-audio-vivid-decoder.patch"
 FFMPEG_AV3A_FORMAT_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0004-av3a-container-parser-demux.patch"
+AV3A_DECODER_PATCH_PATH="$LOCAL_PATCH_ROOT/av3a-decoder/0001-guard-range-overflow-and-conceal-bad-lc-latents.patch"
 if [[ "$TARGET_ARCH" == "arm64" ]]; then
   DAVS2_CONFIGURE_HOST="${DAVS2_CONFIGURE_HOST:-aarch64-apple-darwin}"
 else
@@ -334,6 +335,20 @@ if [[ -z "$AV3A_GIT_URL" ]]; then
   exit 1
 fi
 fetch_git_ref "$AV3A_GIT_URL" "${AV3A_GIT_REF:-HEAD}" "$AV3A_SOURCE_DIR"
+
+av3a_decoder_patch_paths=(
+  "$AV3A_DECODER_PATCH_PATH"
+)
+for patch_path in "${av3a_decoder_patch_paths[@]}"; do
+  if [[ ! -f "$patch_path" ]]; then
+    echo "Missing AV3A decoder patch file: $patch_path" >&2
+    exit 1
+  fi
+  if ! apply_patch_with_fallback "$AV3A_DECODER_SOURCE_DIR" "$patch_path"; then
+    echo "Failed to apply AV3A decoder patch: $patch_path" >&2
+    exit 1
+  fi
+done
 
 log "Building AVS3 audio decoder (libAVS3AudioDec)"
 AV3A_DECODER_BUILD_DIR="$AV3A_BUILD_ROOT/avs3decoder"

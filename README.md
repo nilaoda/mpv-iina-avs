@@ -58,7 +58,7 @@ This script:
 
 - downloads and extracts `ffmpeg-8.1`
 - fetches and builds static `uavs3d`
-- builds static AV3A decoder + binaural renderer from the local `Sourcecodeforplayer` checkout (see `AV3A_SOURCE_ROOT`)
+- applies the vendored AV3A decoder SDK patches, then builds the static AV3A decoder + binaural renderer from the local `Sourcecodeforplayer` checkout (see `AV3A_SOURCE_ROOT`)
 - fetches and builds static `davs2-10bit` when `LICENSE_FLAVOR=gpl`
 - applies the vendored local patches
 - applies the vendored local FFmpeg patch stack, including the locally maintained AVS / AVS+ / DRA base patch derived from `maliwen2015/ffmpeg_cavs_dra`
@@ -230,6 +230,10 @@ For local cross-compilation from arm64, ensure Homebrew packages installed under
   - makes FFmpeg's `libdavs2` wrapper consume the additional AVS2 sequence-display metadata exported by the local `davs2-10bit` patch stack
   - maps AVS2 range / primaries / transfer / matrix values onto FFmpeg `AVCodecContext` and `AVFrame` color fields
   - allows downstream tools such as `ffmpeg`, `ffplay`, `mpv`, and IINA to recognize the basic AVS2 HDR / wide-color signalling correctly
+- `tools/patches/av3a-decoder/0001-guard-range-overflow-and-conceal-bad-lc-latents.patch`
+  - fixes an AV3A SDK LC-path range decode overflow / runaway latent issue that can produce full-scale clipped PCM on malformed or edge-case streams
+  - guards `RangeDecodeProcess()` against 32-bit overflow shifts and conceals invalid LC base latent outliers before dequantization
+  - intentionally lives in the decoder SDK patch stack rather than the FFmpeg `libarcdav3a` wrapper, because the decoded PCM is already corrupt before FFmpeg copies it
 - `tools/patches/ffmpeg/0003-libarcdav3a-add-av3a-audio-vivid-decoder.patch`
   - adds the ArcVideo `libarcdav3a` AV3A (Audio Vivid) decoder glue
 - `tools/patches/ffmpeg/0004-av3a-container-parser-demux.patch`
@@ -272,7 +276,7 @@ Useful overrides:
 - `X86_MCPU`
   - x86-64 micro-architecture target; default is `x86-64` (baseline). Set to `x86-64-v2`, `x86-64-v3`, etc. for newer instruction sets
 - `LOCAL_PATCH_ROOT`
-  - overrides the vendored patch root; default is `tools/patches`
+  - overrides the vendored patch root for FFmpeg, AV3A decoder SDK, davs2, and mpv patches; default is `tools/patches`
 - `AV3A_GIT_URL` / `AV3A_GIT_REF`
   - git source for AV3A; defaults to `https://github.com/nilaoda/Sourcecodeforplayer`
   - default ref: `e7d244d29454eb04c968cd98a30587303a9c15f8`
