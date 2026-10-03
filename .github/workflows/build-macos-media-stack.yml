@@ -17,6 +17,9 @@ env:
   FFMPEG_VERSION: '9.0.1'
   LICENSE_FLAVOR: 'gpl'
   MPV_REF: 'v0.41.0'
+  # Compatible snapshot before Intel/Sonoma bottle support ended in September 2026.
+  X86_HOMEBREW_BREW_REF: 'a9838079e633de36cc8a8ecacf6e545adac73ee1'
+  X86_HOMEBREW_CORE_REF: '252c29dbece147fa170e1755c0d68c18ffe3d651'
   BREW_PACKAGES: >-
     meson ninja pkg-config cmake nasm sdl2
     mujs luajit lua libass libarchive rubberband uchardet
@@ -30,10 +33,11 @@ env:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - arch: arm64
-            runner: macos-14
+            runner: macos-15
           - arch: x86_64
             runner: macos-14
     runs-on: ${{ matrix.runner }}
@@ -42,18 +46,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install x86_64 Homebrew
+      - name: Install pinned x86_64 Homebrew
         if: matrix.arch == 'x86_64'
         run: |
-          curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh \
-            > /tmp/install-brew-x86.sh
-          arch -x86_64 /bin/bash -c '
-            export NONINTERACTIVE=1
-            export HOMEBREW_PREFIX=/usr/local
-            export HOMEBREW_REPOSITORY=/usr/local/Homebrew
-            /bin/bash /tmp/install-brew-x86.sh
-          '
+          # The current installer rejects Intel, including Rosetta. Bootstrap
+          # the default Intel prefix directly from immutable Git snapshots.
+          arch -x86_64 /usr/bin/true
+          brew_dirs=(
+            /usr/local/Homebrew /usr/local/Cellar /usr/local/Caskroom
+            /usr/local/bin /usr/local/etc /usr/local/include /usr/local/lib
+            /usr/local/opt /usr/local/sbin /usr/local/share
+            /usr/local/var /usr/local/var/log /usr/local/var/homebrew
+            /usr/local/var/homebrew/linked /usr/local/Frameworks
+            /usr/local/etc/bash_completion.d /usr/local/lib/pkgconfig
+            /usr/local/share/{aclocal,doc,info,locale,man,zsh}
+            /usr/local/share/man/man{1,2,3,4,5,6,7,8}
+            /usr/local/share/zsh/site-functions
+          )
+          sudo mkdir -p "${brew_dirs[@]}"
+          sudo chown "$(id -un):$(id -gn)" "${brew_dirs[@]}"
+
+          git init /usr/local/Homebrew
+          git -C /usr/local/Homebrew remote add origin https://github.com/Homebrew/brew.git
+          git -C /usr/local/Homebrew fetch --depth=1 origin "$X86_HOMEBREW_BREW_REF"
+          git -C /usr/local/Homebrew checkout --detach FETCH_HEAD
+          ln -sfn /usr/local/Homebrew/bin/brew /usr/local/bin/brew
+
+          core=/usr/local/Homebrew/Library/Taps/homebrew/homebrew-core
+          mkdir -p "$core"
+          git init "$core"
+          git -C "$core" remote add origin https://github.com/Homebrew/homebrew-core.git
+          git -C "$core" fetch --depth=1 origin "$X86_HOMEBREW_CORE_REF"
+          git -C "$core" checkout --detach FETCH_HEAD
+
+          # Keep all later brew invocations on this snapshot, including builds.
+          echo "HOMEBREW_NO_AUTO_UPDATE=1" >> "$GITHUB_ENV"
+          echo "HOMEBREW_NO_INSTALL_FROM_API=1" >> "$GITHUB_ENV"
           echo "/usr/local/bin" >> "$GITHUB_PATH"
+          arch -x86_64 /usr/local/bin/brew --prefix
 
       - name: Install build dependencies
         run: |
@@ -66,7 +96,7 @@ jobs:
                 esac
               fi
             done
-            arch -x86_64 /usr/local/bin/brew update
+            # Do not update either repository or use current API formulae.
             arch -x86_64 /usr/local/bin/brew install --overwrite $BREW_PACKAGES
           else
             brew update

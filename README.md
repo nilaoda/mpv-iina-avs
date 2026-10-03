@@ -360,7 +360,9 @@ Common outputs include:
 
 ## GitHub Actions
 
-A single workflow (`build-macos-media-stack.yml`) builds **both arm64 and x86_64** in parallel via matrix strategy. Both use `macos-14` arm64 runners; x86_64 cross-compiles via Rosetta with x86_64 Homebrew.
+A single workflow (`build-macos-media-stack.yml`) builds **both arm64 and x86_64** in parallel via matrix strategy. arm64 uses a `macos-15` runner; x86_64 cross-compiles via Rosetta on a `macos-14` arm64 runner with Homebrew in `/usr/local`. A failure in one architecture does not cancel the other build.
+
+The Intel Homebrew and `homebrew-core` repositories are pinned to their 2026-08-31 snapshots, before Homebrew stopped producing Intel/Sonoma bottles. The workflow bootstraps these Git repositories directly because the current Homebrew installer rejects Intel installations. Automatic updates and API formula downloads are disabled for the Intel job so dependency installation continues to use the pinned bottle metadata. To refresh Intel dependencies, review both `X86_HOMEBREW_*_REF` values together and verify that the required Sonoma bottles remain available.
 
 Inputs:
 
