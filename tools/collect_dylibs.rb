@@ -71,6 +71,8 @@ def resolve_dependency(dep, prefixes, origin_dir)
   case dep
   when /^@rpath\//
     prefixes.each do |prefix|
+      direct = File.join(prefix, 'lib', basename)
+      return direct if File.exist?(direct)
       candidate = Dir[File.join(prefix, '**', basename)].first
       return candidate if candidate
     end
@@ -113,7 +115,7 @@ until queue.empty?
     dylib.change_install_name!(dep, "@rpath/#{basename}")
 
     src = resolve_dependency(dep, prefixes, origin_dir)
-    next unless src && File.exist?(src)
+    abort("Unresolved dependency #{dep} required by #{file}") unless src && File.exist?(src)
 
     target = File.join(dest_dir, basename)
     queue << [File.realpath(src), File.dirname(src)] unless File.exist?(target)

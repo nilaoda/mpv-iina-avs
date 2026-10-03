@@ -1,30 +1,5 @@
-From 7fed32a22b588aa799f9a2e9b6ccbd69caf3ebc1 Mon Sep 17 00:00:00 2001
-From: tmp <tmp@example.com>
-Date: Fri, 20 Mar 2026 09:50:47 +0800
-Subject: [PATCH 1/4] libcavs: add avs/avsplus/dra base support
-
----
- libavcodec/Makefile     |     4 +-
- libavcodec/allcodecs.c  |     1 +
- libavcodec/codec_desc.c |     7 +
- libavcodec/codec_id.h   |     1 +
- libavcodec/dradec.c     | 13815 ++++++++++++++++++++++++++++
- libavcodec/dradec.h     |    24 +
- libavcodec/libcavs.c    | 18659 ++++++++++++++++++++++++++++++++++++++
- libavcodec/libcavs.h    |   173 +
- libavcodec/libcavsdec.c |   680 ++
- libavcodec/libdradec.c  |   177 +
- libavformat/mpegts.c    |     1 +
- 11 files changed, 33540 insertions(+), 2 deletions(-)
- create mode 100644 libavcodec/dradec.c
- create mode 100644 libavcodec/dradec.h
- create mode 100644 libavcodec/libcavs.c
- create mode 100644 libavcodec/libcavs.h
- create mode 100644 libavcodec/libcavsdec.c
- create mode 100644 libavcodec/libdradec.c
-
 diff --git a/libavcodec/Makefile b/libavcodec/Makefile
-index 12a8265..6f97916 100644
+index 95ba308..837366e 100644
 --- a/libavcodec/Makefile
 +++ b/libavcodec/Makefile
 @@ -303,8 +303,7 @@ OBJS-$(CONFIG_BMV_VIDEO_DECODER)       += bmvvideo.o
@@ -37,7 +12,7 @@ index 12a8265..6f97916 100644
  OBJS-$(CONFIG_CBD2_DPCM_DECODER)       += dpcm.o
  OBJS-$(CONFIG_CCAPTION_DECODER)        += ccaption_dec.o ass.o
  OBJS-$(CONFIG_CDGRAPHICS_DECODER)      += cdgraphics.o
-@@ -1189,6 +1188,7 @@ OBJS-$(CONFIG_LIBJXL_ENCODER)             += libjxlenc.o libjxl.o
+@@ -1186,6 +1185,7 @@ OBJS-$(CONFIG_LIBJXL_ENCODER)             += libjxlenc.o libjxl.o
  OBJS-$(CONFIG_LIBKVAZAAR_ENCODER)         += libkvazaar.o
  OBJS-$(CONFIG_LIBLC3_ENCODER)             += liblc3enc.o
  OBJS-$(CONFIG_LIBLC3_DECODER)             += liblc3dec.o
@@ -46,10 +21,10 @@ index 12a8265..6f97916 100644
  OBJS-$(CONFIG_LIBMPEGHDEC_DECODER)        += libmpeghdec.o
  OBJS-$(CONFIG_LIBOAPV_ENCODER)            += liboapvenc.o
 diff --git a/libavcodec/allcodecs.c b/libavcodec/allcodecs.c
-index 695214f..5d75c42 100644
+index 47eded2..0ab53e6 100644
 --- a/libavcodec/allcodecs.c
 +++ b/libavcodec/allcodecs.c
-@@ -823,6 +823,7 @@ extern const FFCodec ff_libsvtjpegxs_decoder;
+@@ -809,6 +809,7 @@ extern const FFCodec ff_libsvtjpegxs_decoder;
  extern const FFCodec ff_libtheora_encoder;
  extern const FFCodec ff_libtwolame_encoder;
  extern const FFCodec ff_libuavs3d_decoder;
@@ -58,13 +33,13 @@ index 695214f..5d75c42 100644
  extern const FFCodec ff_libvorbis_encoder;
  extern const FFCodec ff_libvorbis_decoder;
 diff --git a/libavcodec/codec_desc.c b/libavcodec/codec_desc.c
-index a9f21f8..c885555 100644
+index 81c095b..62f20c3 100644
 --- a/libavcodec/codec_desc.c
 +++ b/libavcodec/codec_desc.c
-@@ -3568,6 +3568,13 @@ static const AVCodecDescriptor codec_descriptors[] = {
-         .long_name = NULL_IF_CONFIG_SMALL("CRI AHX"),
-         .props     = AV_CODEC_PROP_INTRA_ONLY | AV_CODEC_PROP_LOSSY,
+@@ -3558,6 +3558,14 @@ static const AVCodecDescriptor codec_descriptors[] = {
+         .props     = AV_CODEC_PROP_LOSSY,
      },
+ 
 +    {
 +        .id        = AV_CODEC_ID_DRA,
 +        .type      = AVMEDIA_TYPE_AUDIO,
@@ -72,20 +47,22 @@ index a9f21f8..c885555 100644
 +        .long_name = NULL_IF_CONFIG_SMALL("dra audio decoder"),
 +        .props     = AV_CODEC_PROP_INTRA_ONLY | AV_CODEC_PROP_LOSSY,
 +    },
- 
++
      /* subtitle codecs */
      {
          .id        = AV_CODEC_ID_DVD_SUBTITLE,
 diff --git a/libavcodec/codec_id.h b/libavcodec/codec_id.h
-index 6529f0a..96f0257 100644
+index 668a068..498a8b6 100644
 --- a/libavcodec/codec_id.h
 +++ b/libavcodec/codec_id.h
-@@ -566,6 +566,7 @@ enum AVCodecID {
-     AV_CODEC_ID_LC3,
+@@ -559,6 +559,7 @@ enum AVCodecID {
      AV_CODEC_ID_G728,
      AV_CODEC_ID_AHX,
+     AV_CODEC_ID_APPLE_APAC,
 +    AV_CODEC_ID_DRA,
  
+     /* subtitle codecs */
+     AV_CODEC_ID_FIRST_SUBTITLE = 0x17000,          ///< A dummy ID pointing at the start of subtitle codecs.
 diff --git a/libavcodec/dradec.c b/libavcodec/dradec.c
 new file mode 100644
 index 0000000..66d750d
@@ -32786,7 +32763,7 @@ new file mode 100644
 index 0000000..fe441fa
 --- /dev/null
 +++ b/libavcodec/libcavsdec.c
-@@ -0,0 +1,680 @@
+@@ -0,0 +1,681 @@
 +/*
 + * Chinese AVS video (AVS1-P2, JiZhun profile, frame and field) decoder.
 + * Chinese AVS video (AVS1-P16, GuanDian profile, frame and field) decoder.
@@ -33060,7 +33037,7 @@ index 0000000..fe441fa
 +{
 +    int frame_rate_code;
 +    int width, height;
-+    cavs_seq_info si;
++    cavs_seq_info si = { 0 };
 +    
 +    cavs_decoder_process( h->p_decoder, h->buf, h->length );
 +    
@@ -33089,8 +33066,8 @@ index 0000000..fe441fa
 +    h->mb_height = (h->height + 15) >> 4;
 +    h->avctx->time_base.den = ff_mpeg12_frame_rate_tab[frame_rate_code].num;
 +    h->avctx->time_base.num = ff_mpeg12_frame_rate_tab[frame_rate_code].den;
-+    h->avctx->width  = h->width;
-+    h->avctx->height = h->height;
++    if (ff_set_dimensions(h->avctx, h->width, h->height) < 0)
++        return AVERROR_INVALIDDATA;
 +
 +	h->cur->flags = h->b_interlaced ? (AV_FRAME_FLAG_INTERLACED | AV_FRAME_FLAG_TOP_FIELD_FIRST) : 0;
 +		
@@ -33340,7 +33317,9 @@ index 0000000..fe441fa
 +        case CAVS_START_CODE:
 +            cavs_decoder_init_stream( h->p_decoder, buf_ptr - 4, decode_size);
 +            cavs_decoder_get_one_nal( h->p_decoder, h->buf, &h->length );
-+            cavs_decode_seq_header( h );
++            ret = cavs_decode_seq_header(h);
++            if (ret < 0)
++                return ret;
 +
 +            /* init h->param */
 +            cavs_decoder_param_init( h );
@@ -33463,8 +33442,7 @@ index 0000000..fe441fa
 +    FF_CODEC_DECODE_CB(cavs_decode_frame),
 +    .p.capabilities   = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_OTHER_THREADS,
 +    .caps_internal  = FF_CODEC_CAP_AUTO_THREADS | FF_CODEC_CAP_SETS_FRAME_PROPS,
-+    .p.pix_fmts     = (const enum AVPixelFormat[]) { AV_PIX_FMT_YUV420P,
-+                                                     AV_PIX_FMT_NONE },
++    CODEC_PIXFMTS(AV_PIX_FMT_YUV420P),
 +    .flush          = cavs_flush,
 +};
 diff --git a/libavcodec/libdradec.c b/libavcodec/libdradec.c
@@ -33472,7 +33450,7 @@ new file mode 100644
 index 0000000..082adfd
 --- /dev/null
 +++ b/libavcodec/libdradec.c
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,176 @@
 +#include <stdlib.h>
 +#include <stdint.h>
 +#include <stdio.h>
@@ -33647,14 +33625,13 @@ index 0000000..082adfd
 +    FF_CODEC_DECODE_CB(dra_decode_frame),
 +    .p.capabilities   = AV_CODEC_CAP_CHANNEL_CONF | AV_CODEC_CAP_DR1,
 +    .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
-+    .p.sample_fmts     = (const enum AVSampleFormat[]) { AV_SAMPLE_FMT_S16,
-+                                                     AV_SAMPLE_FMT_NONE },
++    CODEC_SAMPLEFMTS(AV_SAMPLE_FMT_S16),
 +};
 diff --git a/libavformat/mpegts.c b/libavformat/mpegts.c
-index 4b326d3..06fff6f 100644
+index cde8f46..7bc3f45 100644
 --- a/libavformat/mpegts.c
 +++ b/libavformat/mpegts.c
-@@ -880,6 +880,7 @@ static const StreamType REGD_types[] = {
+@@ -909,6 +909,7 @@ static const StreamType REGD_types[] = {
      { MKTAG('I', 'D', '3', ' '), AVMEDIA_TYPE_DATA,  AV_CODEC_ID_TIMED_ID3 },
      { MKTAG('V', 'C', '-', '1'), AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_VC1   },
      { MKTAG('O', 'p', 'u', 's'), AVMEDIA_TYPE_AUDIO, AV_CODEC_ID_OPUS  },

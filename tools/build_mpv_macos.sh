@@ -59,6 +59,9 @@ meson_flags=(
   -Dmanpage-build=disabled
   -Dlua=enabled
   -Djavascript=enabled
+  -Dplain-gl=enabled
+  -Dvideotoolbox-gl=enabled
+  -Dgl=enabled
 )
 append_flags_from_env MPV_EXTRA_MESON_FLAGS meson_flags
 "$MESON_BIN" "${meson_flags[@]}"

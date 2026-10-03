@@ -1,30 +1,8 @@
-From d1459a787abc4babec808160b865b0e956e2517e Mon Sep 17 00:00:00 2001
-From: tmp <tmp@example.com>
-Date: Fri, 20 Mar 2026 09:56:54 +0800
-Subject: [PATCH 4/4] av3a: add parser and container support
-
----
- libavcodec/Makefile      |   1 +
- libavcodec/av3a.h        | 347 ++++++++++++++++++++++++++++++++
- libavcodec/av3a_parser.c | 277 ++++++++++++++++++++++++++
- libavcodec/parsers.c     |   1 +
- libavformat/Makefile     |   1 +
- libavformat/allformats.c |   1 +
- libavformat/av3adec.c    | 419 +++++++++++++++++++++++++++++++++++++++
- libavformat/mov.c        | 121 +++++++++++
- libavformat/movenc.c     |  76 +++++++
- libavformat/mpegts.h     |   1 +
- libavformat/mpegtsenc.c  |   5 +
- 11 files changed, 1250 insertions(+)
- create mode 100644 libavcodec/av3a.h
- create mode 100644 libavcodec/av3a_parser.c
- create mode 100644 libavformat/av3adec.c
-
 diff --git a/libavcodec/Makefile b/libavcodec/Makefile
-index 6298bb0..460ada0 100644
+index 8de969f..c156f96 100644
 --- a/libavcodec/Makefile
 +++ b/libavcodec/Makefile
-@@ -1247,6 +1247,7 @@ OBJS-$(CONFIG_APV_PARSER)              += apv_parser.o
+@@ -1244,6 +1244,7 @@ OBJS-$(CONFIG_APV_PARSER)              += apv_parser.o
  OBJS-$(CONFIG_AV1_PARSER)              += av1_parser.o av1_parse.o
  OBJS-$(CONFIG_AVS2_PARSER)             += avs2.o avs2_parser.o
  OBJS-$(CONFIG_AVS3_PARSER)             += avs3_parser.o
@@ -669,10 +647,10 @@ index 0000000..186fa68
 +    .close          = ff_parse_close,
 +};
 diff --git a/libavcodec/parsers.c b/libavcodec/parsers.c
-index 162b96c..415c842 100644
+index b54442a..c069b05 100644
 --- a/libavcodec/parsers.c
 +++ b/libavcodec/parsers.c
-@@ -47,6 +47,7 @@ extern const FFCodecParser ff_apv_parser;
+@@ -31,6 +31,7 @@ extern const FFCodecParser ff_apv_parser;
  extern const FFCodecParser ff_av1_parser;
  extern const FFCodecParser ff_avs2_parser;
  extern const FFCodecParser ff_avs3_parser;
@@ -681,10 +659,10 @@ index 162b96c..415c842 100644
  extern const FFCodecParser ff_cavsvideo_parser;
  extern const FFCodecParser ff_cook_parser;
 diff --git a/libavformat/Makefile b/libavformat/Makefile
-index 9dabca2..c4eaa1b 100644
+index 21ea15f..a7f00c7 100644
 --- a/libavformat/Makefile
 +++ b/libavformat/Makefile
-@@ -153,6 +153,7 @@ OBJS-$(CONFIG_AVS_DEMUXER)               += avs.o voc_packet.o voc.o
+@@ -157,6 +157,7 @@ OBJS-$(CONFIG_AVS_DEMUXER)               += avs.o voc_packet.o voc.o
  OBJS-$(CONFIG_AVS2_DEMUXER)              += avs2dec.o rawdec.o
  OBJS-$(CONFIG_AVS2_MUXER)                += rawenc.o
  OBJS-$(CONFIG_AVS3_DEMUXER)              += avs3dec.o rawdec.o
@@ -693,7 +671,7 @@ index 9dabca2..c4eaa1b 100644
  OBJS-$(CONFIG_AV3A_MUXER)                += rawenc.o
  OBJS-$(CONFIG_BETHSOFTVID_DEMUXER)       += bethsoftvid.o
 diff --git a/libavformat/allformats.c b/libavformat/allformats.c
-index 0199171..1b5d556 100644
+index e9b8f0d..a172ca5 100644
 --- a/libavformat/allformats.c
 +++ b/libavformat/allformats.c
 @@ -100,6 +100,7 @@ extern const FFInputFormat  ff_avs_demuxer;
@@ -1130,10 +1108,10 @@ index 0000000..485420a
 +    .raw_codec_id   = AV_CODEC_ID_AV3A,
 +};
 diff --git a/libavformat/mov.c b/libavformat/mov.c
-index f026c0f..4af4080 100644
+index 5c4c33c..2884102 100644
 --- a/libavformat/mov.c
 +++ b/libavformat/mov.c
-@@ -51,6 +51,7 @@
+@@ -52,6 +52,7 @@
  #include "libavutil/timecode.h"
  #include "libavutil/uuid.h"
  #include "libavcodec/ac3tab.h"
@@ -1141,7 +1119,7 @@ index f026c0f..4af4080 100644
  #include "libavcodec/exif.h"
  #include "libavcodec/flac.h"
  #include "libavcodec/hevc/hevc.h"
-@@ -8634,6 +8635,125 @@ static int mov_read_dmlp(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+@@ -8828,6 +8829,125 @@ static int mov_read_dmlp(MOVContext *c, AVIOContext *pb, MOVAtom atom)
      return 0;
  }
  
@@ -1267,7 +1245,7 @@ index f026c0f..4af4080 100644
  static int mov_read_dvcc_dvvc(MOVContext *c, AVIOContext *pb, MOVAtom atom)
  {
      AVStream *st;
-@@ -9595,6 +9715,7 @@ static const MOVParseTableEntry mov_default_parse_table[] = {
+@@ -9837,6 +9957,7 @@ static const MOVParseTableEntry mov_default_parse_table[] = {
  { MKTAG('h','f','o','v'), mov_read_hfov },
  { MKTAG('d','O','p','s'), mov_read_dops },
  { MKTAG('d','m','l','p'), mov_read_dmlp },
@@ -1276,18 +1254,18 @@ index f026c0f..4af4080 100644
  { MKTAG('C','o','L','L'), mov_read_coll },
  { MKTAG('v','p','c','C'), mov_read_vpcc },
 diff --git a/libavformat/movenc.c b/libavformat/movenc.c
-index fe6b259..1308eb6 100644
+index aacde4e..2b8d30e 100644
 --- a/libavformat/movenc.c
 +++ b/libavformat/movenc.c
-@@ -39,6 +39,7 @@
- #include "evc.h"
+@@ -40,6 +40,7 @@
  #include "apv.h"
+ #include "lcevc.h"
  #include "libavcodec/ac3_parser_internal.h"
 +#include "libavcodec/av3a.h"
  #include "libavcodec/dnxhddata.h"
  #include "libavcodec/flac.h"
  #include "libavcodec/get_bits.h"
-@@ -934,6 +935,74 @@ static int mov_write_dmlp_tag(AVFormatContext *s, AVIOContext *pb, MOVTrack *tra
+@@ -937,6 +938,74 @@ static int mov_write_dmlp_tag(AVFormatContext *s, AVIOContext *pb, MOVTrack *tra
      return update_size(pb, pos);
  }
  
@@ -1362,7 +1340,7 @@ index fe6b259..1308eb6 100644
  static int mov_write_SA3D_tag(AVFormatContext *s, AVIOContext *pb, MOVTrack *track)
  {
      const AVDictionaryEntry *str = av_dict_get(track->st->metadata, "SA3D", NULL, 0);
-@@ -1509,6 +1578,8 @@ static int mov_write_audio_tag(AVFormatContext *s, AVIOContext *pb, MOVMuxContex
+@@ -1518,6 +1587,8 @@ static int mov_write_audio_tag(AVFormatContext *s, AVIOContext *pb, MOVMuxContex
          ret = mov_write_dops_tag(s, pb, track);
      else if (track->par->codec_id == AV_CODEC_ID_TRUEHD)
          ret = mov_write_dmlp_tag(s, pb, track);
@@ -1371,7 +1349,7 @@ index fe6b259..1308eb6 100644
      else if (tag == MOV_MP4_IPCM_TAG || tag == MOV_MP4_FPCM_TAG) {
          if (track->par->sample_rate > UINT16_MAX)
              mov_write_srat_tag(pb, track);
-@@ -2171,6 +2242,10 @@ static unsigned int validate_codec_tag(const AVCodecTag *const *tags,
+@@ -2193,6 +2264,10 @@ static unsigned int validate_codec_tag(const AVCodecTag *const *tags,
  
  static unsigned int mov_find_codec_tag(AVFormatContext *s, MOVTrack *track)
  {
@@ -1382,7 +1360,7 @@ index fe6b259..1308eb6 100644
      if (is_cover_image(track->st))
          return ff_codec_get_tag(codec_cover_image_tags, track->par->codec_id);
  
-@@ -8921,6 +8996,7 @@ static const AVCodecTag codec_mp4_tags[] = {
+@@ -9267,6 +9342,7 @@ static const AVCodecTag codec_mp4_tags[] = {
      { AV_CODEC_ID_MOV_TEXT,        MKTAG('t', 'x', '3', 'g') },
      { AV_CODEC_ID_BIN_DATA,        MKTAG('g', 'p', 'm', 'd') },
      { AV_CODEC_ID_MPEGH_3D_AUDIO,  MKTAG('m', 'h', 'm', '1') },
@@ -1391,10 +1369,10 @@ index fe6b259..1308eb6 100644
      { AV_CODEC_ID_TTML,            MOV_ISMV_TTML_TAG         },
      { AV_CODEC_ID_FFV1,            MKTAG('F', 'F', 'V', '1') },
 diff --git a/libavformat/mpegts.h b/libavformat/mpegts.h
-index 18f326b..732eb76 100644
+index 58ef248..2a4be0c 100644
 --- a/libavformat/mpegts.h
 +++ b/libavformat/mpegts.h
-@@ -129,6 +129,7 @@
+@@ -130,6 +130,7 @@
  #define STREAM_TYPE_PRIVATE_DATA    0x06
  #define STREAM_TYPE_AUDIO_AAC       0x0f
  #define STREAM_TYPE_AUDIO_AAC_LATM  0x11
@@ -1403,7 +1381,7 @@ index 18f326b..732eb76 100644
  /** ISO/IEC 14496-1 (MPEG-4 Systems) SL-packetized stream or FlexMux stream
      carried in PES packets */
 diff --git a/libavformat/mpegtsenc.c b/libavformat/mpegtsenc.c
-index 96cdea9..32f3a56 100644
+index 7f76883..3d5c60b 100644
 --- a/libavformat/mpegtsenc.c
 +++ b/libavformat/mpegtsenc.c
 @@ -426,6 +426,9 @@ static int get_dvb_stream_type(AVFormatContext *s, AVStream *st)

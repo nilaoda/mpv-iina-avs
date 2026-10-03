@@ -269,7 +269,7 @@ SOURCE_DIR="$SOURCE_ROOT/$SOURCE_BASENAME"
 log "Preparing FFmpeg source"
 mkdir -p "$SOURCE_ROOT"
 if [[ ! -f "$SOURCE_ARCHIVE" ]]; then
-  curl -L "$SOURCE_URL" -o "$SOURCE_ARCHIVE"
+  curl -fL --retry 3 "$SOURCE_URL" -o "$SOURCE_ARCHIVE"
 fi
 rm -rf "$SOURCE_DIR"
 tar -xf "$SOURCE_ARCHIVE" -C "$SOURCE_ROOT"
@@ -629,6 +629,7 @@ ffmpeg_common_pkg_modules=(
   libbs2b
   dav1d
   libjxl
+  SvtAv1Enc
   libplacebo
   libssh
   libwebp
@@ -735,6 +736,7 @@ CONFIGURE_FLAGS=(
   --enable-libfreetype
   --enable-libharfbuzz
   --enable-libjxl
+  --enable-libsvtav1
   --enable-libplacebo
   --enable-librav1e
   --enable-libsnappy

@@ -14,7 +14,7 @@ on:
         type: string
 
 env:
-  FFMPEG_VERSION: '8.1'
+  FFMPEG_VERSION: '9.0.1'
   LICENSE_FLAVOR: 'gpl'
   MPV_REF: 'v0.41.0'
   BREW_PACKAGES: >-
@@ -23,7 +23,7 @@ env:
     frei0r libvidstab
     jpeg-turbo little-cms2
     freetype fontconfig fribidi harfbuzz glib gnutls dav1d
-    libbluray libbs2b libssh webp rav1e
+    libbluray libbs2b libssh libxml2 webp rav1e svt-av1
     libplacebo shaderc molten-vk vulkan-loader
     jpeg-xl libsamplerate snappy speex libsoxr zeromq zimg
 

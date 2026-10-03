@@ -10,12 +10,10 @@ BUNDLE_ROOT="${BUNDLE_ROOT:-$WORK_ROOT/iina-bundle}"
   exit 1
 }
 
-DEST_DIR="$IINA_REPO/deps/lib"
 [[ -d "$IINA_REPO" ]] || { echo "IINA repo not found: $IINA_REPO" >&2; exit 1; }
 [[ -d "$BUNDLE_ROOT" ]] || { echo "Bundle root not found: $BUNDLE_ROOT" >&2; exit 1; }
 
-mkdir -p "$DEST_DIR"
-cp -f "$BUNDLE_ROOT"/*.dylib "$DEST_DIR"/
-
-echo "Synced dylibs to $DEST_DIR"
-echo "If libmpv headers changed, also sync deps/include/mpv and regenerate IINA's generated mpv option/property files."
+require_cmd python3
+python3 "$IINA_REPO/other/custom_bundle.py" prepare \
+  --repo "$IINA_REPO" --bundle "$BUNDLE_ROOT" --arch "$TARGET_ARCH" \
+  --ffmpeg-version "$FFMPEG_VERSION" --mpv-ref "$MPV_REF"
