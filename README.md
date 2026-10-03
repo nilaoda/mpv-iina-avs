@@ -67,7 +67,7 @@ This script:
 
 - downloads and extracts `ffmpeg-9.0.1`
 - fetches and builds static `uavs3d`
-- applies the vendored AV3A decoder SDK patches, then builds the static AV3A decoder + binaural renderer from the local `Sourcecodeforplayer` checkout (see `AV3A_SOURCE_ROOT`)
+- fetches the pinned `Sourcecodeforplayer` ref (see `AV3A_GIT_URL` / `AV3A_GIT_REF`), applies the vendored AV3A decoder SDK patches, then builds the static AV3A decoder + binaural renderer
 - fetches and builds static `davs2-10bit` when `LICENSE_FLAVOR=gpl`
 - applies the vendored local patches
 - applies the vendored local FFmpeg patch stack, including the locally maintained AVS / AVS+ / DRA base patch derived from `maliwen2015/ffmpeg_cavs_dra`
@@ -363,6 +363,10 @@ Common outputs include:
 A single workflow (`build-macos-media-stack.yml`) builds **both arm64 and x86_64** in parallel via matrix strategy. arm64 uses a `macos-15` runner; x86_64 cross-compiles via Rosetta on a `macos-14` arm64 runner with Homebrew in `/usr/local`. A failure in one architecture does not cancel the other build.
 
 The Intel Homebrew and `homebrew-core` repositories are pinned to their 2026-08-31 snapshots, before Homebrew stopped producing Intel/Sonoma bottles. The workflow bootstraps these Git repositories directly because the current Homebrew installer rejects Intel installations. Automatic updates and API formula downloads are disabled for the Intel job so dependency installation continues to use the pinned bottle metadata. To refresh Intel dependencies, review both `X86_HOMEBREW_*_REF` values together and verify that the required Sonoma bottles remain available.
+
+The pinned Intel snapshot has no Sonoma bottles for `expat`, `openssl@3`, or `mujs`. The workflow explicitly installs these three formulae with `--build-from-source` before installing the remaining dependencies from bottles; Homebrew otherwise rejects these source builds on a Tier 3 configuration.
+
+The AV3A source repository is private. Before running the workflow, configure the `AV3A_SOURCE_TOKEN` Actions secret on this repository with a token that can read `nilaoda/Sourcecodeforplayer` (for a fine-grained PAT, grant that repository **Contents: read**). The workflow checks for this secret before installing dependencies, uses it for a separate pinned source checkout with credential persistence disabled, and passes the local checkout to the build through `AV3A_GIT_URL`. Local builds can continue to use their existing Git authentication or set `AV3A_GIT_URL` to a local Git repository containing the pinned ref.
 
 Inputs:
 

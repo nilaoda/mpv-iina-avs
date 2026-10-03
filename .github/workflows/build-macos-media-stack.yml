@@ -17,6 +17,7 @@ env:
   FFMPEG_VERSION: '9.0.1'
   LICENSE_FLAVOR: 'gpl'
   MPV_REF: 'v0.41.0'
+  AV3A_GIT_REF: 'e7d244d29454eb04c968cd98a30587303a9c15f8'
   # Compatible snapshot before Intel/Sonoma bottle support ended in September 2026.
   X86_HOMEBREW_BREW_REF: 'a9838079e633de36cc8a8ecacf6e545adac73ee1'
   X86_HOMEBREW_CORE_REF: '252c29dbece147fa170e1755c0d68c18ffe3d651'
@@ -45,6 +46,24 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check AV3A source access
+        env:
+          AV3A_SOURCE_TOKEN: ${{ secrets.AV3A_SOURCE_TOKEN }}
+        run: |
+          if [[ -z "$AV3A_SOURCE_TOKEN" ]]; then
+            echo "::error::Set the AV3A_SOURCE_TOKEN Actions secret with read access to nilaoda/Sourcecodeforplayer."
+            exit 1
+          fi
+
+      - name: Checkout AV3A source
+        uses: actions/checkout@v4
+        with:
+          repository: nilaoda/Sourcecodeforplayer
+          ref: ${{ env.AV3A_GIT_REF }}
+          token: ${{ secrets.AV3A_SOURCE_TOKEN }}
+          path: .work/av3a-checkout
+          persist-credentials: false
 
       - name: Install pinned x86_64 Homebrew
         if: matrix.arch == 'x86_64'
@@ -97,6 +116,9 @@ jobs:
               fi
             done
             # Do not update either repository or use current API formulae.
+            # Tier 3 refuses to build missing bottles unless explicitly requested.
+            arch -x86_64 /usr/local/bin/brew install --overwrite --build-from-source \
+              expat openssl@3 mujs
             arch -x86_64 /usr/local/bin/brew install --overwrite $BREW_PACKAGES
           else
             brew update
@@ -112,6 +134,8 @@ jobs:
           STRIP: /usr/bin/strip
           LIBTOOL: /usr/bin/libtool
           TARGET_ARCH: ${{ matrix.arch }}
+          # Fetch the pinned source from the authenticated checkout locally.
+          AV3A_GIT_URL: ${{ github.workspace }}/.work/av3a-checkout
         run: |
           if [[ "${{ matrix.arch }}" == "x86_64" ]]; then
             export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH"
