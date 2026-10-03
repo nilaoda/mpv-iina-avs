@@ -7,7 +7,7 @@ This repository maintains its own patch stack. The current approach is:
 Disclaimer: Portions of the decoder source code were obtained from publicly available sources and are included solely for research and educational purposes. They are not licensed for commercial use. If you believe any content infringes your rights, please contact me and I will remove it promptly.
 AV3A demuxer/parser/container handling draws from [openharmony/third_party_ffmpeg](https://github.com/openharmony/third_party_ffmpeg).
 
-- maintain a vendored `FFmpeg 8.1` base patch adapted from the original `maliwen2015/ffmpeg_cavs_dra` source patch
+- maintain a vendored `FFmpeg 9.0.1` base patch adapted from the original `maliwen2015/ffmpeg_cavs_dra` source patch
 - vendor only the additional fixes that are actually needed here under `tools/patches`
 - produce two separate outputs:
   - a dylib bundle for IINA / `libmpv`
@@ -39,10 +39,16 @@ AV3A demuxer/parser/container handling draws from [openharmony/third_party_ffmpe
 - `tools/patches/davs2-10bit/*.patch`
   - vendored `davs2-10bit` patches maintained in this repository, including Apple Silicon AArch64 NEON optimizations for 10-bit decode hot paths and x86-64 assembly/intrinsic build fixes
 - `tools/patches/ffmpeg/*.patch`
-  - vendored FFmpeg patch stack maintained in this repository for `FFmpeg 8.1`
+  - vendored FFmpeg patch stack maintained in this repository for `FFmpeg 9.0.1`
 - `tools/patches/mpv/*.patch`
   - vendored mpv compatibility patches maintained in this repository for the selected FFmpeg / mpv combination
   - vendored FFmpeg-side patches maintained in this repository
+- `tools/validate_media_stack_macos.sh`
+  - validates packaged CLI versions/architecture, custom decoder registration,
+    a video/audio round trip, and SVT-AV1 AVIF encoding before publication
+- `tests/libmpv_gpu_next_macos.c`
+  - an optional macOS GPU smoke test: renders a real file with the libmpv
+    `gpu-next` backend and saves PNG, JXL, and AVIF screenshots
 
 ## Build flow
 
@@ -56,7 +62,7 @@ Run:
 
 This script:
 
-- downloads and extracts `ffmpeg-8.1`
+- downloads and extracts `ffmpeg-9.0.1`
 - fetches and builds static `uavs3d`
 - applies the vendored AV3A decoder SDK patches, then builds the static AV3A decoder + binaural renderer from the local `Sourcecodeforplayer` checkout (see `AV3A_SOURCE_ROOT`)
 - fetches and builds static `davs2-10bit` when `LICENSE_FLAVOR=gpl`
@@ -126,6 +132,13 @@ This bundle targets IINA's `deps/lib` directory and mainly contains:
 - `libmpv`
 - FFmpeg dylibs
 - additional runtime dylibs needed by `libmpv`
+- matching FFmpeg and patched libmpv public headers under `include/`
+- `bundle.json` recording the versions, architecture, and dylib inventory
+
+IINA must compile and run against this same bundle. The sync helper validates
+the FFmpeg 9 ABI and dependency closure, copies the matching headers and libraries,
+and updates the Xcode project to use the actual library filenames. It does not
+create aliases between different FFmpeg ABI versions.
 
 Default output location:
 
@@ -146,6 +159,7 @@ Execution order:
 2. `package_ffmpeg_cli_bundle_macos.sh`
 3. `build_mpv_macos.sh`
 4. `package_iina_bundle_macos.sh`
+5. `validate_media_stack_macos.sh`
 
 ### Building for x86-64 (Intel)
 
@@ -173,7 +187,7 @@ For local cross-compilation from arm64, ensure Homebrew packages installed under
 - `tools/patches/ffmpeg/0001-libcavs-add-avs-avsplus-dra-base.patch`
   - original source: `https://github.com/maliwen2015/ffmpeg_cavs_dra`
   - purpose: vendors the base AVS / AVS+ / DRA enablement patch stack directly in this repository
-  - note: the patch is adapted and maintained locally for `FFmpeg 8.1`, so the build no longer fetches `ffmpeg_cavs_dra.patch` during execution
+  - note: the patch is adapted and maintained locally for `FFmpeg 9.0.1`, so the build no longer fetches `ffmpeg_cavs_dra.patch` during execution
   - includes the macOS build-compat fixes plus the local AVS+ metadata cleanups needed for current FFmpeg
   - keeps the imported `libcavs` / `libdradec` code path usable on current Apple clang while preserving reliable progressive / interlaced output tagging
 
@@ -246,6 +260,11 @@ For local cross-compilation from arm64, ensure Homebrew packages installed under
   - adds `MPV_RENDER_PARAM_BACKEND="gpu-next"` support to `vo_libmpv`, which is the missing upstream piece needed for IINA to experiment with `gpu-next` on the `libmpv` render API path
   - also carries local follow-up fixes in this repository, including `MPV_RENDER_PARAM_FLIP_Y` handling, `MPV_RENDER_PARAM_ICC_PROFILE` forwarding, mpv scaler / tone-mapping option mapping, and macOS `VideoToolbox` direct rendering / screenshot interop for the `libmpv` OpenGL path
   - reuses imported `VideoToolbox` GL textures across frames on macOS so the `gpu-next` direct-render path avoids per-frame texture churn and the associated CPU overhead
+- `tools/patches/mpv/0003-select-avif-encoder-format-and-resolve-scalers.patch`
+  - chooses the AVIF pixel format from the configured encoder, so SVT-AV1
+    is not given an unsupported 12-bit 4:4:4 format from another AV1 encoder
+  - resolves libplacebo's scaler presets, preserving Lanczos and Hermite
+    instead of falling back to bilinear
 
 ## Performance
 
@@ -261,7 +280,7 @@ Defined in `tools/common.sh`:
 
 - `WORK_ROOT=.work`
 - `ARTIFACT_ROOT=artifacts`
-- `FFMPEG_VERSION=8.1`
+- `FFMPEG_VERSION=9.0.1`
 - `MPV_REF=v0.41.0`
 - `LICENSE_FLAVOR=gpl`
 - `TARGET_ARCH=arm64`
@@ -293,10 +312,10 @@ By default, artifacts are written to `artifacts`
 
 Common outputs include:
 
-- `ffmpeg-cli-bundle-macos-{arch}-gpl-ffmpeg-8.1.zip`
+- `ffmpeg-cli-bundle-macos-{arch}-gpl-ffmpeg-9.0.1.zip`
   - CLI test bundle for direct AVS+ / AVS2 decoder and filter validation
   - `{arch}` is `arm64` or `x86_64` depending on the build target
-- `iina-mpv-bundle-macos-{arch}-gpl-ffmpeg-8.1-mpv-v0.41.0.zip`
+- `iina-mpv-bundle-macos-{arch}-gpl-ffmpeg-9.0.1-mpv-v0.41.0.zip`
   - dylib bundle for IINA / `deps/lib`
 - `ffmpeg-cli-bundle-manifest.txt`
   - dependency report for the CLI bundle

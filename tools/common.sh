@@ -5,12 +5,30 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORK_ROOT="${WORK_ROOT:-$REPO_ROOT/.work}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-$REPO_ROOT/artifacts}"
-FFMPEG_VERSION="${FFMPEG_VERSION:-8.1}"
+FFMPEG_VERSION="${FFMPEG_VERSION:-9.0.1}"
 MPV_REF="${MPV_REF:-v0.41.0}"
 LICENSE_FLAVOR="${LICENSE_FLAVOR:-gpl}"
 TARGET_ARCH="${TARGET_ARCH:-arm64}"
 PKG_CONFIG_BIN="${PKG_CONFIG_BIN:-pkg-config}"
 CPU_COUNT="$(sysctl -n hw.ncpu)"
+
+# Direct Xcode toolchain binaries need the SDK location, unlike /usr/bin shims.
+export SDKROOT="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
+
+# Homebrew keeps these dependencies outside its default pkg-config search path.
+if [[ "$TARGET_ARCH" == "x86_64" && -x /usr/local/bin/brew ]]; then
+  brew_prefix="$(/usr/local/bin/brew --prefix)"
+elif command -v brew >/dev/null 2>&1; then
+  brew_prefix="$(brew --prefix)"
+fi
+if [[ -n "${brew_prefix:-}" ]]; then
+  for package in libxml2 libarchive; do
+    pkg_path="$brew_prefix/opt/$package/lib/pkgconfig"
+    if [[ -d "$pkg_path" ]]; then
+      export PKG_CONFIG_PATH="$pkg_path${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    fi
+  done
+fi
 
 FFMPEG_PREFIX="${FFMPEG_PREFIX:-$WORK_ROOT/ffmpeg-prefix}"
 MPV_PREFIX="${MPV_PREFIX:-$WORK_ROOT/mpv-prefix}"

@@ -1,0 +1,28 @@
+diff --git a/video/image_writer.c b/video/image_writer.c
+--- a/video/image_writer.c
++++ b/video/image_writer.c
+@@ -538,7 +538,9 @@
+ 
+ static int get_target_format(struct image_writer_ctx *ctx)
+ {
+-    const AVCodec *codec = avcodec_find_encoder(ctx->opts->format);
++    const AVCodec *codec = ctx->opts->format == AV_CODEC_ID_AV1
++        ? avcodec_find_encoder_by_name(ctx->opts->avif_encoder)
++        : avcodec_find_encoder(ctx->opts->format);
+     if (!codec)
+         goto unknown;
+ 
+diff --git a/video/out/gpu_next/video.c b/video/out/gpu_next/video.c
+--- a/video/out/gpu_next/video.c
++++ b/video/out/gpu_next/video.c
+@@ -229,6 +229,10 @@
+             return fixed_presets[i].filter;
+     }
+ 
++    const struct pl_filter_preset *preset = pl_find_filter_preset(kernel_name);
++    if (preset)
++        return preset->filter;
++
+     mp_msg(p->log, MSGL_WARN, "gpu-next: unsupported scaler '%s', using bilinear\n",
+            kernel_name);
+     return &pl_filter_bilinear;
