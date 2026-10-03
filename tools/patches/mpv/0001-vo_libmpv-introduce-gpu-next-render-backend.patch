@@ -110,7 +110,7 @@ index b4bfa9d643a9a..84f4b303b2746 100644
  #endif
  
  #if HAVE_D3D11
-@@ -235,3 +257,177 @@ void gpu_ctx_destroy(struct gpu_ctx **ctxp)
+@@ -235,3 +257,193 @@ void gpu_ctx_destroy(struct gpu_ctx **ctxp)
      talloc_free(ctx);
      *ctxp = NULL;
  }
@@ -337,7 +337,7 @@ new file mode 100644
 index 0000000000000..31c0cb50bc986
 --- /dev/null
 +++ b/video/out/gpu_next/libmpv_gpu_next.c
-@@ -0,0 +1,329 @@
+@@ -0,0 +1,360 @@
 +#include "libmpv_gpu_next.h"
 +#include <stddef.h>             // for NULL
 +#include <libavutil/error.h>    // for av_err2str
@@ -1298,7 +1298,7 @@ new file mode 100644
 index 0000000000000..bb2e15eef39f6
 --- /dev/null
 +++ b/video/out/gpu_next/video.c
-@@ -0,0 +1,1229 @@
+@@ -0,0 +1,1401 @@
 +#include "video.h"
 +#include <libavutil/buffer.h>              // for AVBufferRef
 +#include <libplacebo/options.h>            // for pl_options, pl_options_alloc
@@ -2705,7 +2705,7 @@ new file mode 100644
 index 0000000000000..0f62ee2e94a2a
 --- /dev/null
 +++ b/video/out/gpu_next/video.h
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,73 @@
 +#pragma once
 +
 +#include "stdbool.h"         // for bool

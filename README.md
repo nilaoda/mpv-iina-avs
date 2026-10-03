@@ -49,6 +49,9 @@ AV3A demuxer/parser/container handling draws from [openharmony/third_party_ffmpe
 - `tests/libmpv_gpu_next_macos.c`
   - an optional macOS GPU smoke test: renders a real file with the libmpv
     `gpu-next` backend and saves PNG, JXL, and AVIF screenshots
+- `tests/libmpv_icc_macos.c`
+  - compares file and Render API ICC output, profile precedence, live profile
+    replacement/clearing, invalid profiles, and HDR-to-SDR transitions
 
 ## Build flow
 
@@ -265,6 +268,39 @@ For local cross-compilation from arm64, ensure Homebrew packages installed under
     is not given an unsupported 12-bit 4:4:4 format from another AV1 encoder
   - resolves libplacebo's scaler presets, preserving Lanczos and Hermite
     instead of falling back to bilinear
+- `tools/patches/mpv/0004-load-display-icc-files-in-libmpv-gpu-next.patch`
+  - loads `icc-profile` files in the libmpv gpu-next backend, matching IINA 1.5's
+    default display-profile configuration
+  - keeps file and Render API profiles separate, gives explicit files priority,
+    and supports changing/clearing profiles while playback is paused
+  - clears old profiles when a replacement file is missing or invalid
+
+### Display ICC regression test (macOS)
+
+Run this on a Mac with an OpenGL context, a freshly built IINA bundle, and an HDR
+sample. Prepare standard Display P3 and sRGB ICC files using AppKit:
+
+```bash
+mkdir -p "$WORK_ROOT/icc-test-results"
+swift - "$WORK_ROOT/icc-test-results" <<'SWIFT'
+import AppKit
+let root = URL(fileURLWithPath: CommandLine.arguments[1])
+try NSColorSpace.displayP3.iccProfileData!.write(to: root.appendingPathComponent("display-p3.icc"))
+try NSColorSpace.sRGB.iccProfileData!.write(to: root.appendingPathComponent("srgb.icc"))
+SWIFT
+clang -Wno-deprecated-declarations -I"$WORK_ROOT/iina-bundle/include" \
+  tests/libmpv_icc_macos.c "$WORK_ROOT/iina-bundle/libmpv.2.dylib" \
+  -framework OpenGL -Wl,-rpath,"$WORK_ROOT/iina-bundle" \
+  -o "$WORK_ROOT/icc-test"
+"$WORK_ROOT/icc-test" /absolute/path/to/HDR-sample \
+  "$WORK_ROOT/icc-test-results/display-p3.icc" \
+  "$WORK_ROOT/icc-test-results/srgb.icc" "$WORK_ROOT/icc-test-results"
+```
+
+Set `WORK_ROOT` to an absolute build directory before running these commands.
+The test saves 640×360 RGBA frames and checks pixel equality across live option
+changes. It covers the renderer; full IINA window/display switching still needs
+an app build and interactive testing.
 
 ## Performance
 

@@ -1,0 +1,163 @@
+diff --git a/video/out/gpu_next/video.c b/video/out/gpu_next/video.c
+index 9238bb8..e386fc1 100644
+--- a/video/out/gpu_next/video.c
++++ b/video/out/gpu_next/video.c
+@@ -19,6 +19,8 @@
+ #include "libplacebo/opengl.h"             // for pl_opengl_wrap, pl_opengl_get
+ #endif
+ #include "options/m_config.h"              // for m_config_cache_alloc
++#include "options/path.h"
++#include "stream/stream.h"
+ #include "options/m_option.h"              // for m_opt_choice_str
+ #include "sub/draw_bmp.h"                  // for mp_draw_sub_formats
+ #include "sub/osd.h"                       // for sub_bitmap, sub_bitmaps
+@@ -87,6 +89,7 @@ struct pl_video_osd_state {
+  */
+ struct pl_video {
+     struct mp_log *log;
++    struct mpv_global *global;
+     struct ra_next *ra;    // The libplacebo rendering abstraction
+     ra_queue queue;        // The frame queue for handling video frames and interpolation.
+     uint64_t last_frame_id;// To avoid pushing duplicate frames into the queue.
+@@ -95,7 +98,9 @@ struct pl_video {
+     struct m_config_cache *opts_cache;
+     pl_log pllog;
+     pl_options pars;
+-    pl_icc_object icc_profile;
++    pl_icc_object icc_profile; // Profile supplied by the Render API.
++    pl_icc_object icc_profile_file;
++    char *icc_profile_path;
+     struct pl_icc_params icc_params;
+     struct scaler_params scalers[SCALER_COUNT];
+     enum pl_color_levels output_levels;
+@@ -238,6 +243,59 @@ static const struct pl_filter_config *map_scaler(struct pl_video *p,
+     return &pl_filter_bilinear;
+ }
+ 
++// Keep file and Render API profiles separate so clearing a file can restore
++// the latest display profile. An explicit file always overrides profile-auto.
++static pl_icc_object *get_active_icc_profile(struct pl_video *p)
++{
++    const struct gl_video_opts *opts = p->opts_cache->opts;
++    const struct mp_icc_opts *icc = opts->icc_opts;
++    if (!icc)
++        return NULL;
++    if (icc->profile && icc->profile[0])
++        return &p->icc_profile_file;
++    return icc->profile_auto ? &p->icc_profile : NULL;
++}
++
++static void update_icc_options(struct pl_video *p, const struct mp_icc_opts *opts)
++{
++    if (!opts)
++        return;
++
++    int r = 0, g = 0, b = 0;
++    gl_parse_3dlut_size(opts->size_str, &r, &g, &b);
++    p->icc_params.intent = opts->intent;
++    p->icc_params.size_r = r;
++    p->icc_params.size_g = g;
++    p->icc_params.size_b = b;
++
++    const char *path = opts->profile && opts->profile[0] ? opts->profile : NULL;
++    if (!path) {
++        pl_icc_close(&p->icc_profile_file);
++        TA_FREEP(&p->icc_profile_path);
++        return;
++    }
++    if (p->icc_profile_path && !strcmp(path, p->icc_profile_path))
++        return;
++
++    // A missing or invalid replacement must not retain the previous display's
++    // profile or silently fall back to the auto profile behind an explicit file.
++    pl_icc_close(&p->icc_profile_file);
++    talloc_replace(p, p->icc_profile_path, path);
++    char *filename = mp_get_user_path(NULL, p->global, path);
++    mp_msg(p->log, MSGL_V, "gpu-next: opening ICC profile '%s'\n", filename);
++    bstr data = stream_read_file(filename, p, p->global, 100000000);
++    struct pl_icc_profile profile = { .data = data.start, .len = data.len };
++    pl_icc_profile_compute_signature(&profile);
++    if (!data.len || !pl_icc_update(p->pllog, &p->icc_profile_file,
++                                  &profile, &p->icc_params)) {
++        pl_icc_close(&p->icc_profile_file);
++        mp_msg(p->log, MSGL_ERR, "gpu-next: failed to load ICC profile '%s'\n",
++               filename);
++    }
++    talloc_free(data.start);
++    talloc_free(filename);
++}
++
+ static void update_render_options(struct pl_video *p)
+ {
+     if (!p || !p->pars || !p->opts_cache)
+@@ -248,6 +306,8 @@ static void update_render_options(struct pl_video *p)
+     pl_options pars = p->pars;
+     const struct gl_video_opts *opts = p->opts_cache->opts;
+ 
++    update_icc_options(p, opts->icc_opts);
++
+     pars->params.skip_anti_aliasing = !opts->correct_downscaling;
+     pars->params.disable_linear_scaling =
+         !opts->linear_downscaling && !opts->linear_upscaling;
+@@ -384,7 +444,7 @@ static void apply_target_options(struct pl_video *p, struct pl_frame *target,
+                                  float min_luma, int target_depth)
+ {
+     const struct gl_video_opts *opts = p->opts_cache->opts;
+-    bool use_icc = opts->icc_opts && opts->icc_opts->profile_auto && p->icc_profile;
++    pl_icc_object *icc = get_active_icc_profile(p);
+ 
+     if (p->output_levels)
+         target->repr.levels = p->output_levels;
+@@ -424,7 +484,7 @@ static void apply_target_options(struct pl_video *p, struct pl_frame *target,
+     }
+ 
+     target->icc = NULL;
+-    if (use_icc) {
++    if (icc && *icc) {
+         if (opts->icc_opts->icc_use_luma) {
+             p->icc_params.max_luma = 0.0f;
+         } else {
+@@ -436,8 +496,8 @@ static void apply_target_options(struct pl_video *p, struct pl_frame *target,
+             ));
+         }
+ 
+-        pl_icc_update(p->pllog, &p->icc_profile, NULL, &p->icc_params);
+-        target->icc = p->icc_profile;
++        pl_icc_update(p->pllog, icc, NULL, &p->icc_params);
++        target->icc = *icc;
+     }
+ }
+ 
+@@ -465,14 +525,8 @@ static void infer_target_map_from_source(struct pl_frame *target,
+ 
+ static struct pl_color_space get_default_libmpv_target_csp(struct pl_video *p)
+ {
+-    if (p && p->opts_cache) {
+-        const struct gl_video_opts *opts = p->opts_cache->opts;
+-        if (opts->icc_opts && opts->icc_opts->profile_auto && p->icc_profile)
+-            return p->icc_profile->csp;
+-    }
+-    if (p && p->icc_profile && !p->opts_cache)
+-        return p->icc_profile->csp;
+-    return pl_color_space_srgb;
++    pl_icc_object *icc = get_active_icc_profile(p);
++    return icc && *icc ? (*icc)->csp : pl_color_space_srgb;
+ }
+ 
+ bool pl_video_set_icc_profile(struct pl_video *p, const void *data, size_t size)
+@@ -844,6 +898,7 @@ struct pl_video *pl_video_init(struct mpv_global *global, struct mp_log *log, st
+     p->osd_fmt[SUBBITMAP_LIBASS] = ra_next_find_fmt(p->ra, PL_FMT_UNORM, 1, 8, 8, 0);
+     p->osd_fmt[SUBBITMAP_BGRA]   = ra_next_find_fmt(p->ra, PL_FMT_UNORM, 4, 8, 8, 0);
+ 
++    p->global = global;
+     p->opts_cache = m_config_cache_alloc(p, global, &gl_video_conf);
+     p->pars = pl_options_alloc(p->pllog);
+     p->icc_params = pl_icc_default_params;
+@@ -895,6 +950,7 @@ void pl_video_uninit(struct pl_video **p_ptr) {
+     }
+ #endif
+     talloc_free(p->vt_texture_pool);
++    pl_icc_close(&p->icc_profile_file);
+     pl_icc_close(&p->icc_profile);
+     pl_options_free(&p->pars);
+ 
