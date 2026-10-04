@@ -253,6 +253,7 @@ FFMPEG_CAVS_DRA_BASE_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0001-libcavs-add-avs-a
 FFMPEG_DAVS2_COLOR_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0002-libdavs2-export-sequence-display-color-metadata.patch"
 FFMPEG_AV3A_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0003-libarcdav3a-add-av3a-audio-vivid-decoder.patch"
 FFMPEG_AV3A_FORMAT_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0004-av3a-container-parser-demux.patch"
+FFMPEG_AV3A_PROBE_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0005-av3a-content-probing.patch"
 AV3A_DECODER_PATCH_PATH="$LOCAL_PATCH_ROOT/av3a-decoder/0001-guard-range-overflow-and-conceal-bad-lc-latents.patch"
 if [[ "$TARGET_ARCH" == "arm64" ]]; then
   DAVS2_CONFIGURE_HOST="${DAVS2_CONFIGURE_HOST:-aarch64-apple-darwin}"
@@ -574,6 +575,16 @@ if [[ ! -f "$FFMPEG_AV3A_FORMAT_PATCH_PATH" ]]; then
 fi
 if ! apply_patch_with_fallback "$SOURCE_DIR" "$FFMPEG_AV3A_FORMAT_PATCH_PATH"; then
   echo "Failed to apply FFmpeg AV3A format patch: $FFMPEG_AV3A_FORMAT_PATCH_PATH" >&2
+  exit 1
+fi
+
+# 修复节目表迟到时的音轨内容探测，保留现有 AV3A 解码器。
+if [[ ! -f "$FFMPEG_AV3A_PROBE_PATCH_PATH" ]]; then
+  echo "Missing FFmpeg AV3A probe patch: $FFMPEG_AV3A_PROBE_PATCH_PATH" >&2
+  exit 1
+fi
+if ! apply_patch_with_fallback "$SOURCE_DIR" "$FFMPEG_AV3A_PROBE_PATCH_PATH"; then
+  echo "Failed to apply FFmpeg AV3A probe patch: $FFMPEG_AV3A_PROBE_PATCH_PATH" >&2
   exit 1
 fi
 

@@ -29,4 +29,11 @@ mkdir -p "$smoke_root"
 "$ffprobe" -v error -show_entries stream=codec_name -of csv=p=0 \
   "$smoke_root/screenshot.avif" | grep -Fx av1
 
+# 使用同一套 AV3A 回归验证内容探测、跨包解析和无节目表 TS。
+printf '#include "verify_av3a.h"\nint main(void) { return verify_av3a(); }\n' > "$smoke_root/verify_av3a.c"
+clang -arch "$TARGET_ARCH" -O2 -Wall -Wextra -DAV3A_VERIFY_DCA3 -I"$SCRIPT_DIR" -I"$FFMPEG_PREFIX/include" \
+  "$smoke_root/verify_av3a.c" -L"$FFMPEG_PREFIX/lib" -lavformat -lavcodec -lavutil \
+  -o "$smoke_root/verify_av3a"
+"$smoke_root/verify_av3a"
+
 log "Validated $TARGET_ARCH FFmpeg $FFMPEG_VERSION, custom decoders, and AVIF encoding"
