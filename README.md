@@ -258,6 +258,11 @@ For local cross-compilation from arm64, ensure Homebrew packages installed under
   - registers AV3A codec IDs, container tags, and MPEG-TS stream type mappings needed for demuxing and raw muxing
   - links against the locally built static AVS3 Audio decoder + binaural renderer (no runtime .so/.dylib dependency; model is embedded via `libavs3_common/model.h`)
 
+- `tools/patches/ffmpeg/0005-av3a-content-probing.patch`
+  - fixes AV3A misidentification as MP3 when MPEG-TS program tables arrive late
+  - probes consecutive AATF frames without requiring a `.av3a` filename and bounds parser buffering
+  - preserves the existing decoder and raw AV3A configuration for MP4 remuxing
+
 - `tools/patches/mpv/0001-vo_libmpv-introduce-gpu-next-render-backend.patch`
   - vendors the current draft of [mpv-player/mpv#16818](https://github.com/mpv-player/mpv/pull/16818) into the local mpv patch stack
   - adds `MPV_RENDER_PARAM_BACKEND="gpu-next"` support to `vo_libmpv`, which is the missing upstream piece needed for IINA to experiment with `gpu-next` on the `libmpv` render API path
