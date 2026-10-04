@@ -169,6 +169,48 @@ static int verify_ts(uint8_t *frames)
     return 0;
 }
 
+static int verify_raw(const uint8_t *frames, int prefix, int force_format)
+{
+    int size = prefix + 4 * FRAME_SIZE;
+    uint8_t *data = av_mallocz(size + AV_INPUT_BUFFER_PADDING_SIZE);
+    AV3A_CHECK(data);
+    memset(data, 0x55, prefix);
+    memcpy(data + prefix, frames, 4 * FRAME_SIZE);
+    AV3AMemoryInput input = {data, size, 0};
+    /* 不可 seek 的小 IO 缓冲覆盖前导残片和帧头跨缓冲边界。 */
+    AVIOContext *io = avio_alloc_context(av_malloc(4096), 4096, 0, &input, av3a_read_memory, NULL, NULL);
+    AV3A_CHECK(io);
+    AVFormatContext *context = avformat_alloc_context();
+    AV3A_CHECK(context);
+    context->pb = io;
+    AV3A_CHECK(avformat_open_input(&context, NULL, force_format ? av_find_input_format("av3a") : NULL, NULL) >= 0);
+    AV3A_CHECK(avformat_find_stream_info(context, NULL) >= 0);
+    AV3A_CHECK(context->nb_streams == 1 && context->streams[0]->codecpar->codec_id == AV_CODEC_ID_AV3A);
+    AV3A_CHECK(context->streams[0]->codecpar->sample_rate == 48000 && context->streams[0]->codecpar->ch_layout.nb_channels == 10);
+#ifdef AV3A_VERIFY_DCA3
+    /* 裸流同步后仍须保留 MP4 配置，码率 384 kbit/s 使用大端序。 */
+    AV3A_CHECK(context->streams[0]->codecpar->extradata_size == 10);
+    AV3A_CHECK(context->streams[0]->codecpar->extradata[8] == 1 && context->streams[0]->codecpar->extradata[9] == 0x80);
+#endif
+    AVPacket *packet = av_packet_alloc();
+    int count = 0;
+    AV3A_CHECK(packet);
+    while (av_read_frame(context, packet) >= 0) {
+        if (packet->size >= HEADER_SIZE && !memcmp(packet->data, frames, HEADER_SIZE)) {
+            AV3A_CHECK(packet->size == FRAME_SIZE && !memcmp(packet->data, frames, FRAME_SIZE));
+            count++;
+        }
+        av_packet_unref(packet);
+    }
+    AV3A_CHECK(count == 4);
+    av_packet_free(&packet);
+    avformat_close_input(&context);
+    av_freep(&io->buffer);
+    avio_context_free(&io);
+    av_free(data);
+    return 0;
+}
+
 static int verify_av3a(void)
 {
     uint8_t frames[4 * FRAME_SIZE + AV_INPUT_BUFFER_PADDING_SIZE] = {0};
@@ -205,7 +247,13 @@ static int verify_av3a(void)
     }
     AV3A_CHECK(!verify_corruption(frames));
     AV3A_CHECK(!verify_ts(frames));
-    puts("AV3A probe, fragmented parser, corruption recovery and table-free TS passed");
+    for (int forced = 0; forced <= 1; forced++) {
+        AV3A_CHECK(!verify_raw(frames, 0, forced));
+        AV3A_CHECK(!verify_raw(frames, 1, forced));
+        AV3A_CHECK(!verify_raw(frames, 187, forced));
+        AV3A_CHECK(!verify_raw(frames, 4092, forced));
+    }
+    puts("AV3A probe, fragmented parser, corruption recovery, raw input and table-free TS passed");
     return 0;
 }
 

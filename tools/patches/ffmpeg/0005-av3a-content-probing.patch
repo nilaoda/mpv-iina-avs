@@ -575,7 +575,7 @@ index a7f00c7..e8f2f14 100644
  OBJS-$(CONFIG_AV3A_MUXER)                += rawenc.o
  OBJS-$(CONFIG_BETHSOFTVID_DEMUXER)       += bethsoftvid.o
 diff --git a/libavformat/av3adec.c b/libavformat/av3adec.c
-index 485420a..775d575 100644
+index 485420a..5891e0c 100644
 --- a/libavformat/av3adec.c
 +++ b/libavformat/av3adec.c
 @@ -1,5 +1,5 @@
@@ -585,7 +585,7 @@ index 485420a..775d575 100644
   *
   * Copyright (c) 2024 Shuai Liu <cqliushuai@outlook.com>
   *
-@@ -19,18 +19,16 @@
+@@ -19,18 +19,17 @@
   * License along with FFmpeg; if not, write to the Free Software
   * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
   */
@@ -597,6 +597,7 @@ index 485420a..775d575 100644
 +#include "libavcodec/get_bits.h"
 +#include "libavutil/intreadwrite.h"
  #include "internal.h"
++#include "avio_internal.h"
 +#include "libavutil/common.h"
 +#include "avformat.h"
 +#include "demux.h"
@@ -612,7 +613,7 @@ index 485420a..775d575 100644
  
  typedef struct {
      uint8_t audio_codec_id;
-@@ -183,149 +181,45 @@ static int av3a_read_aatf_frame_header(const uint8_t *buf, AATFHeaderInfo *hdf)
+@@ -183,149 +182,45 @@ static int av3a_read_aatf_frame_header(const uint8_t *buf, AATFHeaderInfo *hdf)
      return 0;
  }
  
@@ -664,7 +665,24 @@ index 485420a..775d575 100644
 -            (channel_number_index == CHANNEL_CONFIG_MC_22_2) ||
 -            (channel_number_index < CHANNEL_CONFIG_MONO)) {
 -            return AVERROR_INVALIDDATA;
--        }
++    int size = FFMIN(p->buf_size, 64 * 1024);
++    /* 不依赖扩展名；未知 TS 音轨的探测没有 .av3a 文件名。 */
++    for (int start = 0; start <= size - AV3A_HEADER_SIZE; start++) {
++        AV3AHeader first, hdr;
++        int pos = start;
++        if (avpriv_av3a_parse_header(p->buf + pos, size - pos, &first) < 0)
++            continue;
++        /* 同步字与 MPEG 音频相似，必须连续验证三帧及其参数。 */
++        for (int frames = 0; frames < 3; frames++) {
++            if (avpriv_av3a_parse_header(p->buf + pos, size - pos, &hdr) < 0 ||
++                hdr.sample_rate != first.sample_rate || hdr.channels != first.channels ||
++                hdr.profile != first.profile || hdr.nn_type != first.nn_type ||
++                hdr.bits_per_sample != first.bits_per_sample || hdr.frame_size > size - pos)
++                break;
++            pos += hdr.frame_size;
++            if (frames == 2)
++                return AVPROBE_SCORE_EXTENSION + 2;
+         }
 -        skip_bits(&gb, 1);
 -        bitrate_index = get_bits(&gb, 4);
 -        if ((bitrate_index >= AV3A_BITRATE_TABLE_SIZE) || (bitrate_index < 0))
@@ -706,24 +724,7 @@ index 485420a..775d575 100644
 -            total_bitrate = soundbed_bitrate + objects_bitrate * (objects + 1);
 -        } else {
 -            return AVERROR_INVALIDDATA;
-+    int size = FFMIN(p->buf_size, 64 * 1024);
-+    /* 不依赖扩展名；未知 TS 音轨的探测没有 .av3a 文件名。 */
-+    for (int start = 0; start <= size - AV3A_HEADER_SIZE; start++) {
-+        AV3AHeader first, hdr;
-+        int pos = start;
-+        if (avpriv_av3a_parse_header(p->buf + pos, size - pos, &first) < 0)
-+            continue;
-+        /* 同步字与 MPEG 音频相似，必须连续验证三帧及其参数。 */
-+        for (int frames = 0; frames < 3; frames++) {
-+            if (avpriv_av3a_parse_header(p->buf + pos, size - pos, &hdr) < 0 ||
-+                hdr.sample_rate != first.sample_rate || hdr.channels != first.channels ||
-+                hdr.profile != first.profile || hdr.nn_type != first.nn_type ||
-+                hdr.bits_per_sample != first.bits_per_sample || hdr.frame_size > size - pos)
-+                break;
-+            pos += hdr.frame_size;
-+            if (frames == 2)
-+                return AVPROBE_SCORE_EXTENSION + 2;
-         }
+-        }
 -    } else if (coding_profile == AV3A_AMBISONIC_PROFILE) {
 -        hoa_order = get_bits(&gb, 4);
 -        if ((hoa_order < AV3A_AMBISONIC_FIRST_ORDER) || (hoa_order > AV3A_AMBISONIC_THIRD_ORDER))
@@ -768,22 +769,50 @@ index 485420a..775d575 100644
 -    AVDictionary *extra_language_metadata = NULL;
 -    AATFHeaderInfo hdf;
 -    Av3aFormatContext av3afmtctx;
+-    int ret = 0;
 +    AATFHeaderInfo hdf = {0};
 +    Av3aFormatContext av3afmtctx = {0};
-     int ret = 0;
++    int ret = 0, skipped = 0;
++    AV3AHeader parsed;
  
      if (!(stream = avformat_new_stream(s, NULL)))
          return AVERROR(ENOMEM);
  
 -    av_dict_set(&extra_language_metadata, "language", "eng", 0);
- 
+-
      stream->start_time = 0;
      ffstream(stream)->need_parsing = AVSTREAM_PARSE_FULL_RAW;
 -    stream->metadata = extra_language_metadata;
      stream->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
      stream->codecpar->codec_id = ffifmt(s->iformat)->raw_codec_id;
      stream->codecpar->codec_tag = MKTAG('a', 'v', '3', 'a');
-@@ -360,7 +254,9 @@ static int av3a_read_header(AVFormatContext *s)
+@@ -333,6 +228,25 @@ static int av3a_read_header(AVFormatContext *s)
+     if ((ret = avio_read(pb, header, AV3A_MAX_NBYTES_HEADER)) != AV3A_MAX_NBYTES_HEADER)
+         return (ret < 0) ? ret : AVERROR_EOF;
+ 
++    if (avpriv_av3a_parse_header(header, AV3A_MAX_NBYTES_HEADER, &parsed) < 0) {
++        /* 仅有前导残片时保留有界回读范围；正常裸流不扩大 IO 缓冲。 */
++        if ((ret = avio_seek(pb, -AV3A_MAX_NBYTES_HEADER, SEEK_CUR)) < 0)
++            return ret;
++        if ((ret = ffio_ensure_seekback(pb, 64 * 1024)) < 0)
++            return ret;
++        if ((ret = avio_read(pb, header, AV3A_MAX_NBYTES_HEADER)) != AV3A_MAX_NBYTES_HEADER)
++            return ret < 0 ? ret : AVERROR_EOF;
++    }
++
++    /* 内容探测允许前导残片，打开裸流时使用相同的 64 KiB 同步范围。 */
++    while (avpriv_av3a_parse_header(header, AV3A_MAX_NBYTES_HEADER, &parsed) < 0) {
++        if (skipped++ >= 64 * 1024 - AV3A_MAX_NBYTES_HEADER)
++            return AVERROR_INVALIDDATA;
++        memmove(header, header + 1, AV3A_MAX_NBYTES_HEADER - 1);
++        if ((ret = avio_read(pb, header + AV3A_MAX_NBYTES_HEADER - 1, 1)) != 1)
++            return ret < 0 ? ret : AVERROR_EOF;
++    }
++
+     if ((ret = av3a_read_aatf_frame_header(header, &hdf)) < 0)
+         return ret;
+ 
+@@ -360,7 +274,9 @@ static int av3a_read_header(AVFormatContext *s)
          ret = ff_alloc_extradata(stream->codecpar, sizeof(Av3aFormatContext));
          if (ret < 0)
              return ret;
@@ -794,7 +823,7 @@ index 485420a..775d575 100644
      }
  
      if ((ret = avio_seek(s->pb, -AV3A_MAX_NBYTES_HEADER, SEEK_CUR)) < 0)
-@@ -369,51 +265,15 @@ static int av3a_read_header(AVFormatContext *s)
+@@ -369,51 +285,15 @@ static int av3a_read_header(AVFormatContext *s)
      return 0;
  }
  

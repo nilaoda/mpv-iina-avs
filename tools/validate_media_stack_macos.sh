@@ -31,7 +31,7 @@ mkdir -p "$smoke_root"
 
 # 使用同一套 AV3A 回归验证内容探测、跨包解析和无节目表 TS。
 printf '#include "verify_av3a.h"\nint main(void) { return verify_av3a(); }\n' > "$smoke_root/verify_av3a.c"
-clang -arch "$TARGET_ARCH" -O2 -Wall -Wextra -I"$SCRIPT_DIR" -I"$FFMPEG_PREFIX/include" \
+clang -arch "$TARGET_ARCH" -O2 -Wall -Wextra -DAV3A_VERIFY_DCA3 -I"$SCRIPT_DIR" -I"$FFMPEG_PREFIX/include" \
   "$smoke_root/verify_av3a.c" -L"$FFMPEG_PREFIX/lib" -lavformat -lavcodec -lavutil \
   -o "$smoke_root/verify_av3a"
 "$smoke_root/verify_av3a"
