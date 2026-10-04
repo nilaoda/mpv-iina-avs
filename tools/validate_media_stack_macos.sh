@@ -4,9 +4,12 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 ffmpeg="$WORK_ROOT/ffmpeg-cli-bundle/bin/ffmpeg"
 ffprobe="$WORK_ROOT/ffmpeg-cli-bundle/bin/ffprobe"
+ffplay="$WORK_ROOT/ffmpeg-cli-bundle/bin/ffplay"
 require_cmd lipo grep
 "$ffmpeg" -version | grep -F "ffmpeg version $FFMPEG_VERSION "
-for binary in "$ffmpeg" "$ffprobe"; do
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
+  "$ffplay" -version | grep -F "ffplay version $FFMPEG_VERSION "
+for binary in "$ffmpeg" "$ffprobe" "$ffplay"; do
   lipo "$binary" -verify_arch "$TARGET_ARCH"
 done
 
@@ -24,6 +27,8 @@ mkdir -p "$smoke_root"
   -f lavfi -i 'sine=frequency=440:sample_rate=48000' -t 1 \
   -c:v mpeg4 -c:a flac -y "$smoke_root/sdr.mkv"
 "$ffmpeg" -hide_banner -v error -i "$smoke_root/sdr.mkv" -f null -
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
+  "$ffplay" -hide_banner -v error -nodisp -autoexit "$smoke_root/sdr.mkv"
 "$ffmpeg" -hide_banner -v error -i "$smoke_root/sdr.mkv" -frames:v 1 \
   -c:v libsvtav1 -svtav1-params avif=1 -y "$smoke_root/screenshot.avif"
 "$ffprobe" -v error -show_entries stream=codec_name -of csv=p=0 \

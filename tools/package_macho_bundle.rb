@@ -135,10 +135,22 @@ until queue.empty?
   macho = MachOFile.new(dest)
   macho.change_id!("@rpath/#{basename}") if kind == :lib
 
-  macho.deps.each do |dep|
+  # sdl2-compat uses dlopen, so SDL3 does not appear in otool's dependency list.
+  # Its macOS loader expects this unversioned name next to the SDL2 library.
+  runtime_deps = if kind == :lib && basename.start_with?('libSDL2') &&
+                    File.binread(src).include?('sdl2-compat:')
+                   ['@rpath/libSDL3.dylib']
+                 else
+                   []
+                 end
+
+  (macho.deps + runtime_deps).each do |dep|
     next if dep.start_with?('/usr/lib/', '/System/Library/')
 
     resolved = resolve_dependency(dep, prefixes, origin_dir)
+    if runtime_deps.include?(dep) && !(resolved && File.file?(resolved))
+      abort("Missing required runtime dependency #{dep} for #{src}")
+    end
     next unless resolved && File.exist?(resolved)
 
     dep_basename = File.basename(dep)
@@ -150,7 +162,7 @@ until queue.empty?
                else
                  "@loader_path/#{dep_basename}"
                end
-    macho.change_install_name!(dep, new_name)
+    macho.change_install_name!(dep, new_name) unless runtime_deps.include?(dep)
 
     target = File.join(lib_dir, dep_basename)
     queue << [File.realpath(resolved), File.dirname(resolved), :lib, dep_basename] unless File.exist?(target)

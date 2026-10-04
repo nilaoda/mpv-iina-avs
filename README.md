@@ -52,6 +52,9 @@ AV3A demuxer/parser/container handling draws from [openharmony/third_party_ffmpe
 - `tests/libmpv_icc_macos.c`
   - compares file and Render API ICC output, profile precedence, live profile
     replacement/clearing, invalid profiles, and HDR-to-SDR transitions
+- `tests/package_macho_bundle_macos.sh`
+  - checks SDL3 runtime dependency collection, missing dependencies, transitive
+    dylibs, and relocation using standalone Mach-O fixtures
 
 ## Build flow
 
@@ -98,6 +101,8 @@ The packaging step also:
 - preserves the versioned dylib naming / symlink behavior required by the Mach-O dependency chain
 - rewrites `install_name` entries so the bundle is relocatable
 - re-signs modified Mach-O binaries so macOS does not immediately kill them
+- includes SDL3 when SDL2 is provided by `sdl2-compat`, including its runtime
+  dependencies, and checks that packaged `ffplay` starts successfully
 - writes a dependency manifest for troubleshooting
 
 Default output location:
@@ -105,7 +110,9 @@ Default output location:
 - zip files: `artifacts`
 - manifest: `artifacts/ffmpeg-cli-bundle-manifest.txt`
 
-Note: the bundle includes `ffplay`, so runtime availability still depends on the local graphical / SDL2 environment on the target macOS system.
+Note: `ffplay` includes its SDL libraries; windowed playback still requires a
+graphical macOS session. Validation also exercises playback with SDL's dummy
+audio and video drivers.
 
 ### 3. Build mpv / libmpv
 

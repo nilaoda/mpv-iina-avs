@@ -22,13 +22,21 @@ rm -rf "$BUNDLE_ROOT"
 mkdir -p "$BUNDLE_ROOT"
 
 log "Collecting FFmpeg CLI bundle"
+package_prefixes=("$FFMPEG_PREFIX")
+if [[ -n "${brew_prefix:-}" && -d "$brew_prefix/opt/sdl3" ]]; then
+  package_prefixes+=("$brew_prefix/opt/sdl3")
+fi
 ruby "$REPO_ROOT/tools/package_macho_bundle.rb" \
   "$BUNDLE_ROOT" \
-  "$FFMPEG_PREFIX" \
+  "${package_prefixes[@]}" \
   -- \
   "$FFMPEG_BIN" \
   "$FFPROBE_BIN" \
   "$FFPLAY_BIN"
+
+# SDL2 compatibility libraries may load SDL3 before ffplay parses its options.
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
+  "$BUNDLE_ROOT/bin/ffplay" -version > /dev/null
 
 {
   echo "Bundle root: $BUNDLE_ROOT"
