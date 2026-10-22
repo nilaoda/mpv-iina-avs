@@ -8,10 +8,27 @@
 #include "libavcodec/avcodec.h"
 #include "libavformat/avformat.h"
 #include "libavutil/mem.h"
+#include "libavutil/dict.h"
 
 #define FRAME_SIZE 1024
 #define HEADER_SIZE 9
 #define AV3A_CHECK(cond) do { if (!(cond)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #cond); return 1; } } while (0)
+
+static int verify_channel_metadata(const AVStream *stream, const char *type,
+                                   const char *bed, const char *layout,
+                                   const char *objects, const char *order)
+{
+    static const char *const keys[] = {
+        "av3a_content_type", "av3a_bed_channels", "av3a_bed_layout",
+        "av3a_objects", "av3a_hoa_order"
+    };
+    const char *values[] = {type, bed, layout, objects, order};
+    for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        const AVDictionaryEntry *entry = av_dict_get(stream->metadata, keys[i], NULL, 0);
+        AV3A_CHECK(values[i] ? entry && !strcmp(entry->value, values[i]) : !entry);
+    }
+    return 0;
+}
 
 static void make_frame(uint8_t *buf)
 {
@@ -163,6 +180,7 @@ static int verify_ts(uint8_t *frames)
     AV3A_CHECK(context->streams[0]->codecpar->codec_id == AV_CODEC_ID_AV3A);
     AV3A_CHECK(context->streams[0]->codecpar->sample_rate == 48000);
     AV3A_CHECK(context->streams[0]->codecpar->ch_layout.nb_channels == 10);
+    AV3A_CHECK(!verify_channel_metadata(context->streams[0], "channel-based", "10", "5.1.4", NULL, NULL));
     avformat_close_input(&context);
     av_freep(&io->buffer);
     avio_context_free(&io);
@@ -187,6 +205,7 @@ static int verify_raw(const uint8_t *frames, int prefix, int force_format)
     AV3A_CHECK(avformat_find_stream_info(context, NULL) >= 0);
     AV3A_CHECK(context->nb_streams == 1 && context->streams[0]->codecpar->codec_id == AV_CODEC_ID_AV3A);
     AV3A_CHECK(context->streams[0]->codecpar->sample_rate == 48000 && context->streams[0]->codecpar->ch_layout.nb_channels == 10);
+    AV3A_CHECK(!verify_channel_metadata(context->streams[0], "channel-based", "10", "5.1.4", NULL, NULL));
 #ifdef AV3A_VERIFY_DCA3
     /* 裸流同步后仍须保留 MP4 配置，码率 384 kbit/s 使用大端序。 */
     AV3A_CHECK(context->streams[0]->codecpar->extradata_size == 10);
@@ -205,6 +224,58 @@ static int verify_raw(const uint8_t *frames, int prefix, int force_format)
     AV3A_CHECK(count == 4);
     av_packet_free(&packet);
     avformat_close_input(&context);
+    av_freep(&io->buffer);
+    avio_context_free(&io);
+    av_free(data);
+    return 0;
+}
+
+static int verify_metadata_changes(void)
+{
+    static const uint8_t headers[][HEADER_SIZE] = {
+        {0xff, 0xf2, 0x10, 0x52, 0x42, 0x11, 0xb8, 0x0c, 0x24},
+        {0xff, 0xf2, 0x12, 0x46, 0xa8, 0xa4, 0x07, 0x6d, 0x88},
+        {0xff, 0xf2, 0x14, 0x40, 0x04, 0x98, 0x00, 0x00, 0x00},
+        {0xff, 0xf2, 0x12, 0x40, 0x00, 0x34, 0x40, 0x00, 0x00}
+    };
+    static const int sizes[] = {1024, 4267, 1366, 683};
+    uint8_t *data = av_mallocz(3 * (1024 + 4267 + 1366 + 683) + AV_INPUT_BUFFER_PADDING_SIZE);
+    AVFormatContext *input = avformat_alloc_context();
+    AVPacket *packet = av_packet_alloc();
+    int size = 0, count = 0, ret;
+    AV3A_CHECK(data && input && packet);
+    for (int config = 0; config < 4; config++) {
+        for (int frame = 0; frame < 3; frame++) {
+            memset(data + size, 0x55, sizes[config]);
+            memcpy(data + size, headers[config], HEADER_SIZE);
+            size += sizes[config];
+        }
+    }
+    AV3AMemoryInput memory = {data, size, 0};
+    AVIOContext *io = avio_alloc_context(av_malloc(4096), 4096, 0, &memory, av3a_read_memory, NULL, NULL);
+    AV3A_CHECK(io);
+    input->pb = io;
+    AV3A_CHECK(avformat_open_input(&input, NULL, av_find_input_format("av3a"), NULL) >= 0);
+    /* 不提前探测，逐帧验证配置切换会更新字段并清理旧字段。 */
+    while ((ret = av_read_frame(input, packet)) >= 0) {
+        int config = count / 3;
+        AV3A_CHECK(config < 4 && packet->size == sizes[config]);
+        AV3A_CHECK(!!(input->streams[0]->event_flags & AVSTREAM_EVENT_FLAG_METADATA_UPDATED) == (count % 3 == 0));
+        input->streams[0]->event_flags &= ~AVSTREAM_EVENT_FLAG_METADATA_UPDATED;
+        if (config == 0)
+            AV3A_CHECK(!verify_channel_metadata(input->streams[0], "channel-based", "10", "5.1.4", NULL, NULL));
+        else if (config == 1)
+            AV3A_CHECK(!verify_channel_metadata(input->streams[0], "channels+objects", "12", "7.1.4", "4", NULL));
+        else if (config == 2)
+            AV3A_CHECK(!verify_channel_metadata(input->streams[0], "HOA", NULL, NULL, NULL, "3"));
+        else
+            AV3A_CHECK(!verify_channel_metadata(input->streams[0], "object-based", NULL, NULL, "4", NULL));
+        count++;
+        av_packet_unref(packet);
+    }
+    AV3A_CHECK(ret == AVERROR_EOF && count == 12);
+    av_packet_free(&packet);
+    avformat_close_input(&input);
     av_freep(&io->buffer);
     avio_context_free(&io);
     av_free(data);
@@ -246,6 +317,7 @@ static int verify_av3a(void)
         }
     }
     AV3A_CHECK(!verify_corruption(frames));
+    AV3A_CHECK(!verify_metadata_changes());
     AV3A_CHECK(!verify_ts(frames));
     for (int forced = 0; forced <= 1; forced++) {
         AV3A_CHECK(!verify_raw(frames, 0, forced));
@@ -253,7 +325,7 @@ static int verify_av3a(void)
         AV3A_CHECK(!verify_raw(frames, 187, forced));
         AV3A_CHECK(!verify_raw(frames, 4092, forced));
     }
-    puts("AV3A probe, fragmented parser, corruption recovery, raw input and table-free TS passed");
+    puts("AV3A probe, fragmented parser, metadata changes, raw input and table-free TS passed");
     return 0;
 }
 

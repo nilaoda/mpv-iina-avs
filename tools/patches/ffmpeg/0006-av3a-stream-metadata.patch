@@ -1,0 +1,113 @@
+diff --git a/libavformat/internal.h b/libavformat/internal.h
+--- a/libavformat/internal.h
++++ b/libavformat/internal.h
+@@ -201,6 +201,9 @@
+      * should be discarded.
+      */
+     int skip_to_keyframe;
++
++    /** 上次写入 AV3A 轨道元数据的声道床、对象与 HOA 配置。 */
++    unsigned av3a_metadata_config;
+ 
+     /**
+      * Number of samples to skip at the start of the frame decoded from the next packet.
+diff --git a/libavformat/demux.c b/libavformat/demux.c
+--- a/libavformat/demux.c
++++ b/libavformat/demux.c
+@@ -38,6 +38,10 @@
+ #include "libavcodec/avcodec.h"
+ #include "libavcodec/bsf.h"
+ #include "libavcodec/codec_desc.h"
++#if CONFIG_AV3A_PARSER
++#include "libavcodec/av3a_parse.h"
++#include "libavcodec/get_bits.h"
++#endif
+ #include "libavcodec/internal.h"
+ #include "packet_internal.h"
+ #include "libavcodec/raw.h"
+@@ -1386,6 +1390,70 @@
+ 
+ static int extract_extradata(FFFormatContext *si, AVStream *st, const AVPacket *pkt);
+ 
++#if CONFIG_AV3A_PARSER
++static int update_av3a_metadata(AVStream *st, const AVPacket *pkt)
++{
++    static const char *const layouts[] = {
++        "mono", "stereo", "5.1", "7.1", NULL, NULL, "4.0",
++        "5.1.2", "5.1.4", "7.1.2", "7.1.4"
++    };
++    static const char *const keys[] = {
++        "av3a_content_type", "av3a_bed_channels", "av3a_bed_layout",
++        "av3a_objects", "av3a_hoa_order"
++    };
++    AV3AHeader hdr;
++    GetBitContext gb;
++    int channel_config = -1, objects_count = 0, hoa_order = 0;
++    FFStream *const sti = ffstream(st);
++    char bed[4], objects[4], order[4];
++    unsigned signature;
++    int bed_channels, ret;
++    const char *values[FF_ARRAY_ELEMS(keys)];
++
++    if (avpriv_av3a_parse_header(pkt->data, pkt->size, &hdr) < 0 ||
++        pkt->size < hdr.frame_size)
++        return 0;
++    /* 头部验证沿用现有解析器，附加字段只在解封装层读取，不改变编解码 ABI。 */
++    if (init_get_bits8(&gb, pkt->data, AV3A_HEADER_SIZE) < 0)
++        return 0;
++    skip_bits_long(&gb, 35);
++    if (hdr.profile == 0) {
++        channel_config = get_bits(&gb, 7);
++    } else if (hdr.profile == 1) {
++        if (get_bits(&gb, 2)) {
++            channel_config = get_bits(&gb, 7);
++            skip_bits(&gb, 4);
++        }
++        objects_count = get_bits(&gb, 7) + 1;
++    } else {
++        hoa_order = get_bits(&gb, 4) + 1;
++    }
++    signature = 1U | (hdr.profile << 1) | ((channel_config + 1) << 3) |
++                (objects_count << 7) | (hoa_order << 15);
++    /* 配置不变时不重复分配字典项；定位和连续读取共用同一缓存。 */
++    if (sti->av3a_metadata_config == signature)
++        return 0;
++    bed_channels = channel_config >= 0 ? hdr.channels - objects_count : 0;
++    snprintf(bed, sizeof(bed), "%d", bed_channels);
++    snprintf(objects, sizeof(objects), "%d", objects_count);
++    snprintf(order, sizeof(order), "%d", hoa_order);
++    values[0] = hoa_order ? "HOA" : objects_count ?
++                (bed_channels ? "channels+objects" : "object-based") : "channel-based";
++    values[1] = bed_channels ? bed : NULL;
++    values[2] = bed_channels ? layouts[channel_config] : NULL;
++    values[3] = objects_count ? objects : NULL;
++    values[4] = hoa_order ? order : NULL;
++    for (unsigned i = 0; i < FF_ARRAY_ELEMS(keys); i++) {
++        /* 删除新配置不再适用的字段，避免对象或 HOA 信息残留。 */
++        if ((ret = av_dict_set(&st->metadata, keys[i], values[i], 0)) < 0)
++            return ret;
++    }
++    sti->av3a_metadata_config = signature;
++    st->event_flags |= AVSTREAM_EVENT_FLAG_METADATA_UPDATED;
++    return 0;
++}
++#endif
++
+ static int read_frame_internal(AVFormatContext *s, AVPacket *pkt)
+ {
+     FormatContextInternal *const fci = ff_fc_internal(s);
+@@ -1534,6 +1602,14 @@
+         AVStream *const st  = s->streams[pkt->stream_index];
+         FFStream *const sti = ffstream(st);
+         int discard_padding = 0;
++#if CONFIG_AV3A_PARSER
++        /* 在解析器组装完整帧后读取，同时覆盖探测和正常取包路径。 */
++        if (st->codecpar->codec_id == AV_CODEC_ID_AV3A &&
++            (ret = update_av3a_metadata(st, pkt)) < 0) {
++            av_packet_unref(pkt);
++            return ret;
++        }
++#endif
+         if (sti->first_discard_sample && pkt->pts != AV_NOPTS_VALUE) {
+             int64_t pts = pkt->pts - (is_relative(pkt->pts) ? RELATIVE_TS_BASE : 0);
+             int64_t sample = ts_to_samples(st, pts);

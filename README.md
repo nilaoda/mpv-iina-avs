@@ -270,6 +270,11 @@ For local cross-compilation from arm64, ensure Homebrew packages installed under
   - probes consecutive AATF frames without requiring a `.av3a` filename and bounds parser buffering
   - preserves the existing decoder and raw AV3A configuration for MP4 remuxing
 
+- `tools/patches/ffmpeg/0006-av3a-stream-metadata.patch`
+  - exposes `av3a_content_type`, `av3a_bed_channels`, `av3a_bed_layout`, `av3a_objects` and `av3a_hoa_order` as stream metadata for MP4, TS and raw AV3A
+  - separates bed speakers from audio objects without changing codec channel accounting; a 7.1.4 bed plus four objects retains 16 coded components
+  - updates metadata when the configuration changes and removes fields that no longer apply; `ffprobe -show_streams` and library clients receive the same fields after probing or packet reading
+
 - `tools/patches/mpv/0001-vo_libmpv-introduce-gpu-next-render-backend.patch`
   - vendors the current draft of [mpv-player/mpv#16818](https://github.com/mpv-player/mpv/pull/16818) into the local mpv patch stack
   - adds `MPV_RENDER_PARAM_BACKEND="gpu-next"` support to `vo_libmpv`, which is the missing upstream piece needed for IINA to experiment with `gpu-next` on the `libmpv` render API path
