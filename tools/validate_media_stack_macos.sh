@@ -18,7 +18,11 @@ for codec in cavs libdavs2 libuavs3d libdra libarcdav3a; do
   if [[ "$codec" == libdavs2 && "$LICENSE_FLAVOR" != gpl ]]; then
     continue
   fi
-  printf '%s\n' "$decoders" | grep -Eq "^[[:space:]]+[A-Z.]{6}[[:space:]]+$codec[[:space:]]"
+  # 直接传入解码器列表，避免 grep 提前退出后让 printf 触发 SIGPIPE。
+  if ! grep -Eq "^[[:space:]]+[A-Z.]{6}[[:space:]]+$codec[[:space:]]" <<< "$decoders"; then
+    echo "Missing required decoder: $codec" >&2
+    exit 1
+  fi
 done
 
 smoke_root="$WORK_ROOT/media-stack-smoke"
