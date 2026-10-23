@@ -14,7 +14,7 @@ on:
         type: string
 
 env:
-  FFMPEG_VERSION: '9.0.1'
+  FFMPEG_VERSION: '9.0.2'
   LICENSE_FLAVOR: 'gpl'
   MPV_REF: 'v0.41.0'
   AV3A_GIT_REF: 'e7d244d29454eb04c968cd98a30587303a9c15f8'
@@ -103,6 +103,19 @@ jobs:
           echo "HOMEBREW_NO_INSTALL_FROM_API=1" >> "$GITHUB_ENV"
           echo "/usr/local/bin" >> "$GITHUB_PATH"
           arch -x86_64 /usr/local/bin/brew --prefix
+
+      - name: Skip OpenSSL source-build tests on x86_64
+        if: matrix.arch == 'x86_64'
+        run: |
+          # The pinned formula runs its full upstream suite inside install.
+          # Keep compilation and installation, and skip only that test command.
+          ruby -e '
+            path = ARGV.fetch(0)
+            source = File.binread(path)
+            test_line = %q{    system "make", "HARNESS_JOBS=#{ENV.make_jobs}", "test", "TESTS=-test_afalg -test_quic_tserver"} + "\n"
+            abort "OpenSSL formula changed; review the source-build test command" unless source.scan(test_line).length == 1
+            File.binwrite(path, source.sub(test_line, ""))
+          ' /usr/local/Homebrew/Library/Taps/homebrew/homebrew-core/Formula/o/openssl@3.rb
 
       - name: Install build dependencies
         run: |
