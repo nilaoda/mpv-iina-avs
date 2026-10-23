@@ -7,7 +7,7 @@ This repository maintains its own patch stack. The current approach is:
 Disclaimer: Portions of the decoder source code were obtained from publicly available sources and are included solely for research and educational purposes. They are not licensed for commercial use. If you believe any content infringes your rights, please contact me and I will remove it promptly.
 AV3A demuxer/parser/container handling draws from [openharmony/third_party_ffmpeg](https://github.com/openharmony/third_party_ffmpeg).
 
-- maintain a vendored `FFmpeg 9.0.1` base patch adapted from the original `maliwen2015/ffmpeg_cavs_dra` source patch
+- maintain a vendored `FFmpeg 9.0.2` base patch adapted from the original `maliwen2015/ffmpeg_cavs_dra` source patch
 - vendor only the additional fixes that are actually needed here under `tools/patches`
 - produce two separate outputs:
   - a dylib bundle for IINA / `libmpv`
@@ -39,7 +39,7 @@ AV3A demuxer/parser/container handling draws from [openharmony/third_party_ffmpe
 - `tools/patches/davs2-10bit/*.patch`
   - vendored `davs2-10bit` patches maintained in this repository, including Apple Silicon AArch64 NEON optimizations for 10-bit decode hot paths and x86-64 assembly/intrinsic build fixes
 - `tools/patches/ffmpeg/*.patch`
-  - vendored FFmpeg patch stack maintained in this repository for `FFmpeg 9.0.1`
+  - vendored FFmpeg patch stack maintained in this repository for `FFmpeg 9.0.2`
 - `tools/patches/mpv/*.patch`
   - vendored mpv compatibility patches maintained in this repository for the selected FFmpeg / mpv combination
   - vendored FFmpeg-side patches maintained in this repository
@@ -68,7 +68,7 @@ Run:
 
 This script:
 
-- downloads and extracts `ffmpeg-9.0.1`
+- downloads and extracts `ffmpeg-9.0.2`
 - fetches and builds static `uavs3d`
 - fetches the pinned `Sourcecodeforplayer` ref (see `AV3A_GIT_URL` / `AV3A_GIT_REF`), applies the vendored AV3A decoder SDK patches, then builds the static AV3A decoder + binaural renderer
 - fetches and builds static `davs2-10bit` when `LICENSE_FLAVOR=gpl`
@@ -197,7 +197,7 @@ For local cross-compilation from arm64, ensure Homebrew packages installed under
 - `tools/patches/ffmpeg/0001-libcavs-add-avs-avsplus-dra-base.patch`
   - original source: `https://github.com/maliwen2015/ffmpeg_cavs_dra`
   - purpose: vendors the base AVS / AVS+ / DRA enablement patch stack directly in this repository
-  - note: the patch is adapted and maintained locally for `FFmpeg 9.0.1`, so the build no longer fetches `ffmpeg_cavs_dra.patch` during execution
+  - note: the patch is adapted and maintained locally for `FFmpeg 9.0.2`, so the build no longer fetches `ffmpeg_cavs_dra.patch` during execution
   - includes the macOS build-compat fixes plus the local AVS+ metadata cleanups needed for current FFmpeg
   - keeps the imported `libcavs` / `libdradec` code path usable on current Apple clang while preserving reliable progressive / interlaced output tagging
 
@@ -333,7 +333,7 @@ Defined in `tools/common.sh`:
 
 - `WORK_ROOT=.work`
 - `ARTIFACT_ROOT=artifacts`
-- `FFMPEG_VERSION=9.0.1`
+- `FFMPEG_VERSION=9.0.2`
 - `MPV_REF=v0.41.0`
 - `LICENSE_FLAVOR=gpl`
 - `TARGET_ARCH=arm64`
@@ -365,10 +365,10 @@ By default, artifacts are written to `artifacts`
 
 Common outputs include:
 
-- `ffmpeg-cli-bundle-macos-{arch}-gpl-ffmpeg-9.0.1.zip`
+- `ffmpeg-cli-bundle-macos-{arch}-gpl-ffmpeg-9.0.2.zip`
   - CLI test bundle for direct AVS+ / AVS2 decoder and filter validation
   - `{arch}` is `arm64` or `x86_64` depending on the build target
-- `iina-mpv-bundle-macos-{arch}-gpl-ffmpeg-9.0.1-mpv-v0.41.0.zip`
+- `iina-mpv-bundle-macos-{arch}-gpl-ffmpeg-9.0.2-mpv-v0.41.0.zip`
   - dylib bundle for IINA / `deps/lib`
 - `ffmpeg-cli-bundle-manifest.txt`
   - dependency report for the CLI bundle
@@ -381,7 +381,7 @@ A single workflow (`build-macos-media-stack.yml`) builds **both arm64 and x86_64
 
 The Intel Homebrew and `homebrew-core` repositories are pinned to their 2026-08-31 snapshots, before Homebrew stopped producing Intel/Sonoma bottles. The workflow bootstraps these Git repositories directly because the current Homebrew installer rejects Intel installations. Automatic updates and API formula downloads are disabled for the Intel job so dependency installation continues to use the pinned bottle metadata. To refresh Intel dependencies, review both `X86_HOMEBREW_*_REF` values together and verify that the required Sonoma bottles remain available.
 
-The pinned Intel snapshot has no Sonoma bottles for `expat`, `openssl@3`, or `mujs`. The workflow explicitly installs these three formulae with `--build-from-source` before installing the remaining dependencies from bottles; Homebrew otherwise rejects these source builds on a Tier 3 configuration.
+The pinned Intel snapshot has no Sonoma bottles for `expat`, `openssl@3`, or `mujs`. The workflow explicitly installs these three formulae with `--build-from-source` before installing the remaining dependencies from bottles; Homebrew otherwise rejects these source builds on a Tier 3 configuration. Before installation, the workflow removes only the full upstream `make test` invocation from the pinned OpenSSL formula, saving about 16 minutes in the observed Rosetta build. The edit requires an exact single match and fails if the formula changes. OpenSSL compilation and installation, along with the media-stack smoke tests, still run.
 
 The AV3A source repository is private. Before running the workflow, configure the `AV3A_SOURCE_TOKEN` Actions secret on this repository with a token that can read `nilaoda/Sourcecodeforplayer` (for a fine-grained PAT, grant that repository **Contents: read**). The workflow checks for this secret before installing dependencies, uses it for a separate pinned source checkout with credential persistence disabled, and passes the local checkout to the build through `AV3A_GIT_URL`. Local builds can continue to use their existing Git authentication or set `AV3A_GIT_URL` to a local Git repository containing the pinned ref.
 
