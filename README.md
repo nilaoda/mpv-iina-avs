@@ -190,6 +190,21 @@ The x86-64 build uses the same FFmpeg and mpv patch stacks as arm64. The davs2 d
 
 For local cross-compilation from arm64, ensure Homebrew packages installed under `/usr/local` (x86_64) are available — the build script uses `-arch x86_64` and expects x86_64 libraries in the standard Homebrew prefix.
 
+## Automatic downmix peak protection
+
+The custom libmpv provides `audio-limit-downmix=yes`. It applies a linked
+look-ahead limiter only when known-layout surround PCM is actually converted to
+mono or stereo. Mixing stays in floating point until after limiting, including
+when the output device needs integer samples. The limiter has a 0.95 ceiling,
+no automatic makeup gain, and compensates its look-ahead delay. Stereo inputs,
+multichannel outputs and passthrough retain their existing path.
+
+Explicit `audio-normalize-downmix=yes` retains mpv's fixed normalized matrix
+instead. IINA enables the limiter and removes its former injected normalization
+default. Bundles include `audio_limit_downmix: true` in `bundle.json`; packaging
+checks for the option in libmpv before declaring this capability. Rebuild the
+media bundle before building the matching IINA change.
+
 ## Patch stack
 
 ### Base patch
@@ -291,6 +306,13 @@ For local cross-compilation from arm64, ensure Homebrew packages installed under
   - keeps file and Render API profiles separate, gives explicit files priority,
     and supports changing/clearing profiles while playback is paused
   - clears old profiles when a replacement file is missing or invalid
+
+- `tools/patches/mpv/0005-limit-surround-downmix-peaks.patch`
+  - adds `audio-limit-downmix` at the actual channel-conversion stage
+  - limits after floating-point downmix and before integer conversion
+  - uses FFmpeg's limiter and mpv's existing filter draining/reset handling
+  - routes playback-speed changes to the mixing resampler only
+  - preserves explicit dithering settings at the final sample-format conversion
 
 ### Display ICC regression test (macOS)
 
