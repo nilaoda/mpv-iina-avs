@@ -270,8 +270,21 @@ SOURCE_DIR="$SOURCE_ROOT/$SOURCE_BASENAME"
 
 log "Preparing FFmpeg source"
 mkdir -p "$SOURCE_ROOT"
+if [[ -f "$SOURCE_ARCHIVE" ]] && ! tar -tf "$SOURCE_ARCHIVE" >/dev/null 2>&1; then
+  log "Removing incomplete FFmpeg source archive"
+  rm -f "$SOURCE_ARCHIVE"
+fi
 if [[ ! -f "$SOURCE_ARCHIVE" ]]; then
-  curl -fL --retry 3 "$SOURCE_URL" -o "$SOURCE_ARCHIVE"
+  archive_part="$SOURCE_ARCHIVE.part"
+  if curl -fL --retry 3 --retry-all-errors --retry-delay 2 \
+      --connect-timeout 20 --max-time 180 --retry-max-time 300 \
+      "$SOURCE_URL" -o "$archive_part" && tar -tf "$archive_part" >/dev/null; then
+    mv -f "$archive_part" "$SOURCE_ARCHIVE"
+  else
+    rm -f "$archive_part"
+    echo "Failed to download a valid FFmpeg source archive: $SOURCE_URL" >&2
+    exit 1
+  fi
 fi
 rm -rf "$SOURCE_DIR"
 tar -xf "$SOURCE_ARCHIVE" -C "$SOURCE_ROOT"
