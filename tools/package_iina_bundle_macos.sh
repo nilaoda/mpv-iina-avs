@@ -47,12 +47,15 @@ import os
 from pathlib import Path
 
 root = Path(os.environ['BUNDLE_ROOT'])
+if b'audio-limit-downmix\0' not in (root / 'libmpv.2.dylib').read_bytes():
+    raise SystemExit('libmpv does not support audio-limit-downmix; rebuild with the downmix limiter patch')
 metadata = {
     'schema_version': 1,
     'ffmpeg_version': os.environ['FFMPEG_VERSION'],
     'mpv_ref': os.environ['MPV_REF'],
     'arch': os.environ['TARGET_ARCH'],
     'render_backend': 'gpu-next',
+    'audio_limit_downmix': True,
     'dylibs': sorted(p.name for p in root.glob('*.dylib')),
 }
 (root / 'bundle.json').write_text(json.dumps(metadata, indent=2) + '\n')

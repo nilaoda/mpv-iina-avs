@@ -1,0 +1,161 @@
+diff --git a/DOCS/man/options.rst b/DOCS/man/options.rst
+index fa71dc0..a8c728b 100644
+--- a/DOCS/man/options.rst
++++ b/DOCS/man/options.rst
+@@ -5239,6 +5239,17 @@ libavfilter, within the system audio API resampler, or any other places).
+     (decoder downmixing), or in the audio output (system mixer), this has no
+     effect.
+
++``--audio-limit-downmix=<yes|no>``
++    Limit sample peaks when known-layout surround PCM is downmixed to mono or
++    stereo (default: no). Downmix in floating point, apply a linked look-ahead
++    limiter with a 0.95 ceiling and no automatic makeup gain, then convert to
++    the output format. The limiter compensates its look-ahead delay.
++
++    Stereo sources, multichannel outputs and passthrough are not processed.
++    Explicit ``--audio-normalize-downmix=yes`` retains the original normalized
++    matrix and disables this limiter. This does not repair clipping already
++    present in the source or guard against gain applied later by the output.
++
+ ``--audio-resample-max-output-size=<length>``
+     Limit maximum size of audio frames filtered at once, in ms (default: 40).
+     The output size size is limited in order to make resample speed changes
+diff --git a/filters/f_autoconvert.c b/filters/f_autoconvert.c
+index e045d74..a2e3441 100644
+--- a/filters/f_autoconvert.c
++++ b/filters/f_autoconvert.c
+@@ -3,12 +3,15 @@
+ #include "audio/format.h"
+ #include "common/common.h"
+ #include "common/msg.h"
++#include "options/m_config.h"
++#include "options/options.h"
+ #include "video/hwdec.h"
+ #include "video/mp_image.h"
+ #include "video/mp_image_pool.h"
+
+ #include "f_autoconvert.h"
+ #include "f_hwtransfer.h"
++#include "f_lavfi.h"
+ #include "f_swresample.h"
+ #include "f_swscale.h"
+ #include "f_utils.h"
+@@ -43,6 +46,7 @@ struct priv {
+     int in_afmt, in_srate;
+     struct mp_chmap in_chmap;
+
++    struct mp_filter *audio_resampler;
+     double audio_speed;
+     bool resampling_forced;
+
+@@ -418,6 +422,7 @@ static void handle_audio_frame(struct mp_filter *f)
+         p->format_change_cont = false;
+     }
+
++    p->audio_resampler = NULL;
+     p->in_afmt = afmt;
+     p->in_srate = srate;
+     p->in_chmap = chmap;
+@@ -454,15 +459,66 @@ static void handle_audio_frame(struct mp_filter *f)
+
+     MP_VERBOSE(p, "inserting resampler\n");
+
+-    struct mp_swresample *s = mp_swresample_create(f, NULL);
++    struct mp_resample_opts *opts =
++        mp_get_config_group(NULL, f->global, &resample_conf);
++    bool limit_downmix = opts->limit_downmix && !opts->normalize &&
++                        af_fmt_is_pcm(afmt) && af_fmt_is_pcm(out_afmt) &&
++                        chmap.num > 2 && out_chmap.num <= 2 &&
++                        !mp_chmap_is_unknown(&chmap) &&
++                        !mp_chmap_is_unknown(&out_chmap);
++    struct mp_filter *chain = limit_downmix ?
++        mp_bidir_dummy_filter_create(f) : NULL;
++    if (limit_downmix && !chain)
++        abort();
++    struct mp_swresample *s = mp_swresample_create(chain ? chain : f, NULL);
+     if (!s)
+         abort();
+
+-    s->out_format = out_afmt;
++    // Preserve peaks in floating point until after downmix and limiting.
++    s->out_format = limit_downmix ? AF_FORMAT_DOUBLE : out_afmt;
+     s->out_rate = out_srate;
+     s->out_channels = out_chmap;
++    p->audio_resampler = s->f;
++
++    if (limit_downmix) {
++        struct mp_lavfi *limiter = mp_lavfi_create_graph(chain, MP_FRAME_AUDIO,
++            true, NULL, NULL,
++            "[in]alimiter=limit=0.95:level=false:latency=true[out]");
++        struct mp_resample_opts convert_opts = MP_RESAMPLE_OPTS_DEF;
++        // Apply explicit dithering only at the final sample-format conversion.
++        int num_dither_opts = 0;
++        for (int n = 0; opts->avopts && opts->avopts[n]; n += 2) {
++            const char *key = opts->avopts[n];
++            if (strcmp(key, "dither_method") && strcmp(key, "dither_scale") &&
++                strcmp(key, "output_sample_bits"))
++                continue;
++            MP_TARRAY_APPEND(chain, convert_opts.avopts, num_dither_opts,
++                             opts->avopts[n]);
++            MP_TARRAY_APPEND(chain, convert_opts.avopts, num_dither_opts,
++                             opts->avopts[n + 1]);
++        }
++        if (num_dither_opts)
++            MP_TARRAY_APPEND(chain, convert_opts.avopts, num_dither_opts, NULL);
++        struct mp_swresample *convert = mp_swresample_create(chain, &convert_opts);
++        if (!limiter || !convert) {
++            talloc_free(chain);
++            talloc_free(opts);
++            p->audio_resampler = NULL;
++            MP_ERR(p, "Cannot initialize downmix limiter.\n");
++            mp_filter_internal_mark_failed(f);
++            return;
++        }
++        convert->out_format = out_afmt;
++        convert->out_rate = out_srate;
++        convert->out_channels = out_chmap;
++        struct mp_filter *filters[] = {s->f, limiter->f, convert->f};
++        mp_chain_filters(chain->ppins[0], chain->ppins[1], filters, 3);
++        MP_VERBOSE(p, "Limiting downmix peaks from %d to %d channels\n",
++                   chmap.num, out_chmap.num);
++    }
+
+-    p->sub.filter = s->f;
++    talloc_free(opts);
++    p->sub.filter = chain ? chain : s->f;
+
+ cont:
+
+@@ -471,7 +527,7 @@ cont:
+             .type = MP_FILTER_COMMAND_SET_SPEED_RESAMPLE,
+             .speed = p->audio_speed,
+         };
+-        mp_filter_command(p->sub.filter, &cmd);
++        mp_filter_command(p->audio_resampler, &cmd);
+     }
+
+     mp_subfilter_continue(&p->sub);
+diff --git a/filters/f_swresample.c b/filters/f_swresample.c
+index 87bf3be..39c3cff 100644
+--- a/filters/f_swresample.c
++++ b/filters/f_swresample.c
+@@ -75,6 +75,7 @@ const struct m_sub_options resample_conf = {
+         {"audio-resample-linear", OPT_BOOL(linear)},
+         {"audio-resample-cutoff", OPT_DOUBLE(cutoff), M_RANGE(0, 1)},
+         {"audio-normalize-downmix", OPT_BOOL(normalize)},
++        {"audio-limit-downmix", OPT_BOOL(limit_downmix)},
+         {"audio-resample-max-output-size", OPT_DOUBLE(max_output_frame_size)},
+         {"audio-swresample-o", OPT_KEYVALUELIST(avopts)},
+         {0}
+diff --git a/filters/f_swresample.h b/filters/f_swresample.h
+index 8ef3335..19a7882 100644
+--- a/filters/f_swresample.h
++++ b/filters/f_swresample.h
+@@ -22,6 +22,7 @@ struct mp_resample_opts {
+     bool linear;
+     double cutoff;
+     bool normalize;
++    bool limit_downmix;
+     int allow_passthrough;
+     double max_output_frame_size;
+     char **avopts;
