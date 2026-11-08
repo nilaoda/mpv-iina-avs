@@ -40,7 +40,7 @@ jobs:
           - arch: arm64
             runner: macos-15
           - arch: x86_64
-            runner: macos-14
+            runner: macos-15
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -168,7 +168,7 @@ jobs:
 
   release:
     needs: build
-    runs-on: macos-14
+    runs-on: macos-15
     if: ${{ inputs.publish_release }}
     permissions:
       contents: write
