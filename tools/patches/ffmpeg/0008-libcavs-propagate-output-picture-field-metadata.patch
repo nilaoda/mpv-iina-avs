@@ -1,0 +1,79 @@
+diff --git a/libavcodec/libcavs.c b/libavcodec/libcavs.c
+--- a/libavcodec/libcavs.c
++++ b/libavcodec/libcavs.c
+@@ -700,6 +700,7 @@
+ 	uint32_t   i_distance_index;
+ 	uint32_t   i_code_type;
+ 	uint32_t   b_top_field_first;
++    uint32_t   b_progressive_frame;
+ 	uint32_t   i_ref_distance[2]; /* two ref-frames at most */
+ 	uint32_t   b_picture_structure;
+ 	int64_t    pts;
+@@ -8558,6 +8559,7 @@
+ 
+     p->p_save[0]->i_distance_index = p->ph.i_picture_distance*2;
+     p->p_save[0]->b_top_field_first = p->ph.b_top_field_first;
++    p->p_save[0]->b_progressive_frame = p->ph.b_progressive_frame;
+     p->p_save[0]->i_code_type = p->ph.i_picture_coding_type;
+ 
+     init_ref_list(p, b_bottom);
+@@ -8651,6 +8653,7 @@
+ 		return CAVS_ERROR;
+     p->p_save_aec[0]->i_distance_index = p->ph.i_picture_distance*2;
+     p->p_save_aec[0]->b_top_field_first = p->ph.b_top_field_first;
++    p->p_save_aec[0]->b_progressive_frame = p->ph.b_progressive_frame;
+     p->p_save_aec[0]->i_code_type = p->ph.i_picture_coding_type;
+     
+     p->b_fixed_qp = p->ph.b_fixed_picture_qp;
+@@ -8707,6 +8710,7 @@
+ {
+     p->p_save[0]->i_distance_index = p->ph.i_picture_distance*2;
+     p->p_save[0]->b_top_field_first = p->ph.b_top_field_first;
++    p->p_save[0]->b_progressive_frame = p->ph.b_progressive_frame;
+     p->p_save[0]->i_code_type = p->ph.i_picture_coding_type;
+     p->i_mb_x = p->i_mb_y = 0;
+     p->i_mb_flags = 0;
+@@ -8719,6 +8723,7 @@
+ {
+     p->p_save[0]->i_distance_index = p->ph.i_picture_distance*2;
+     p->p_save[0]->b_top_field_first = p->ph.b_top_field_first;
++    p->p_save[0]->b_progressive_frame = p->ph.b_progressive_frame;
+     p->p_save[0]->i_code_type = p->ph.i_picture_coding_type;
+     p->i_mb_x = p->i_mb_y = 0;
+     p->i_mb_flags = 0;
+@@ -13538,14 +13543,10 @@
+     target->pts = p_cur->pts;
+     target->dts = p_cur->dts;
+     target->user_data = p_cur->user_data;
+-    target->output_field_info_valid = (p_cur->b_picture_structure == 0);
+-    if (target->output_field_info_valid) {
+-        target->output_interlaced = 1;
+-        target->output_top_field_first = p_cur->b_top_field_first;
+-    } else {
+-        target->output_interlaced = 0;
+-        target->output_top_field_first = 0;
+-    }
++    /* Metadata follows the reconstructed picture through frame reordering. */
++    target->output_field_info_valid = 1;
++    target->output_interlaced = !p_cur->b_progressive_frame;
++    target->output_top_field_first = target->output_interlaced && p_cur->b_top_field_first;
+     uint32_t j = 0;
+     unsigned char* p_bufimg;
+     uint8_t *p_yuv;
+diff --git a/libavcodec/libcavsdec.c b/libavcodec/libcavsdec.c
+--- a/libavcodec/libcavsdec.c
++++ b/libavcodec/libcavsdec.c
+@@ -163,7 +163,12 @@
+ {
+     frame->pts = h->param.pts;
+     frame->pkt_dts = h->param.dts;
+-    frame->flags = h->b_interlaced ? (AV_FRAME_FLAG_INTERLACED | AV_FRAME_FLAG_TOP_FIELD_FIRST) : 0;
++    frame->flags &= ~(AV_FRAME_FLAG_KEY | AV_FRAME_FLAG_INTERLACED | AV_FRAME_FLAG_TOP_FIELD_FIRST);
++    if (h->param.output_field_info_valid && h->param.output_interlaced) {
++        frame->flags |= AV_FRAME_FLAG_INTERLACED;
++        if (h->param.output_top_field_first)
++            frame->flags |= AV_FRAME_FLAG_TOP_FIELD_FIRST;
++    }
+     if (h->param.output_type == 0)
+         frame->flags |= AV_FRAME_FLAG_KEY;
+     frame->pict_type = h->param.output_type + 1;

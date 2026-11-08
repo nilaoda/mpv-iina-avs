@@ -1,0 +1,554 @@
+diff --git a/build/linux/Makefile b/build/linux/Makefile
+index 01ff0f4..3715643 100644
+--- a/build/linux/Makefile
++++ b/build/linux/Makefile
+@@ -12,6 +12,12 @@ CFLAGS += -I$(SRCPATH) -I$(SRCPATH)/.. \
+ 			-I$(SRCPATH)/x86 \
+ 			-I$(SRCPATH)/vec
+ 
++ifeq ($(COMPILER),GNU)
++ifeq ($(SYS_ARCH),X86_64)
++common/mc.o: CFLAGS += -ftree-vectorize
++endif
++endif
++
+ GENERATED =
+ 
+ all: default
+diff --git a/source/common/mc.cc b/source/common/mc.cc
+index c924ac0..4d886be 100644
+--- a/source/common/mc.cc
++++ b/source/common/mc.cc
+@@ -739,7 +739,20 @@ void davs2_mc_init(uint32_t cpuid, ao_funcs_t *pf)
+     }
+     
+     if (cpuid & DAVS2_CPU_AVX2) {
+-#if !HIGH_BIT_DEPTH
++#if HIGH_BIT_DEPTH
++        pf->intpl_luma_hor[1][0] = intpl_luma_block_hor_avx2;
++        pf->intpl_luma_hor[1][1] = intpl_luma_block_hor_avx2;
++        pf->intpl_luma_hor[1][2] = intpl_luma_block_hor_avx2;
++        pf->intpl_luma_ext[1] = intpl_luma_block_ext_avx2;
++
++        pf->intpl_chroma_ver[1] = intpl_chroma_block_ver_avx2;
++        pf->intpl_chroma_hor[1] = intpl_chroma_block_hor_avx2;
++        pf->intpl_chroma_ext[1] = intpl_chroma_block_ext_avx2;
++
++        pf->intpl_luma_ver[1][0] = intpl_luma_block_ver_avx2;
++        pf->intpl_luma_ver[1][1] = intpl_luma_block_ver_avx2;
++        pf->intpl_luma_ver[1][2] = intpl_luma_block_ver_avx2;
++#else
+         pf->intpl_luma_hor[1][0] = intpl_luma_block_hor_avx2;
+         pf->intpl_luma_hor[1][1] = intpl_luma_block_hor_avx2;
+         pf->intpl_luma_hor[1][2] = intpl_luma_block_hor_avx2;
+diff --git a/source/common/vec/intrinsic_inter_pred_avx2.cc b/source/common/vec/intrinsic_inter_pred_avx2.cc
+index 94da12a..6e3f9cd 100644
+--- a/source/common/vec/intrinsic_inter_pred_avx2.cc
++++ b/source/common/vec/intrinsic_inter_pred_avx2.cc
+@@ -43,2 +43,506 @@
+ 
++#if HIGH_BIT_DEPTH
++/* ---------------------------------------------------------------------------
++ * 10-bit motion compensation.  The scalar C kernels stay in use when AVX2 is
++ * unavailable; these only replace the large-block slots selected at runtime.
++ */
++
++static inline __m256i coeff_pair_256(const int8_t *coeff, int pair)
++{
++    return _mm256_set1_epi32(((int)coeff[2 * pair + 1] * 65536) +
++                             ((int)coeff[2 * pair] & 0xffff));
++}
++
++static inline __m128i coeff_pair_128(const int8_t *coeff, int pair)
++{
++    return _mm_set1_epi32(((int)coeff[2 * pair + 1] * 65536) +
++                          ((int)coeff[2 * pair] & 0xffff));
++}
++
++static inline void hor_8tap_16(const pel_t *src, int x, const int8_t *coeff,
++                               __m256i *sum_lo, __m256i *sum_hi)
++{
++    __m256i lo = _mm256_setzero_si256();
++    __m256i hi = _mm256_setzero_si256();
++    int k;
++
++    for (k = 0; k < 4; k++) {
++        __m256i a = _mm256_loadu_si256((const __m256i *)(src + x - 3 + 2 * k));
++        __m256i b = _mm256_loadu_si256((const __m256i *)(src + x - 2 + 2 * k));
++        __m256i c = coeff_pair_256(coeff, k);
++
++        lo = _mm256_add_epi32(lo, _mm256_madd_epi16(_mm256_unpacklo_epi16(a, b), c));
++        hi = _mm256_add_epi32(hi, _mm256_madd_epi16(_mm256_unpackhi_epi16(a, b), c));
++    }
++    *sum_lo = lo;
++    *sum_hi = hi;
++}
++
++static inline void hor_8tap_8(const pel_t *src, int x, const int8_t *coeff,
++                              __m128i *sum_lo, __m128i *sum_hi)
++{
++    __m128i lo = _mm_setzero_si128();
++    __m128i hi = _mm_setzero_si128();
++    int k;
++
++    for (k = 0; k < 4; k++) {
++        __m128i a = _mm_loadu_si128((const __m128i *)(src + x - 3 + 2 * k));
++        __m128i b = _mm_loadu_si128((const __m128i *)(src + x - 2 + 2 * k));
++        __m128i c = coeff_pair_128(coeff, k);
++
++        lo = _mm_add_epi32(lo, _mm_madd_epi16(_mm_unpacklo_epi16(a, b), c));
++        hi = _mm_add_epi32(hi, _mm_madd_epi16(_mm_unpackhi_epi16(a, b), c));
++    }
++    *sum_lo = lo;
++    *sum_hi = hi;
++}
++
++static inline void hor_4tap_16(const pel_t *src, int x, const int8_t *coeff,
++                               __m256i *sum_lo, __m256i *sum_hi)
++{
++    __m256i lo = _mm256_setzero_si256();
++    __m256i hi = _mm256_setzero_si256();
++    int k;
++
++    for (k = 0; k < 2; k++) {
++        __m256i a = _mm256_loadu_si256((const __m256i *)(src + x - 1 + 2 * k));
++        __m256i b = _mm256_loadu_si256((const __m256i *)(src + x + 2 * k));
++        __m256i c = coeff_pair_256(coeff, k);
++
++        lo = _mm256_add_epi32(lo, _mm256_madd_epi16(_mm256_unpacklo_epi16(a, b), c));
++        hi = _mm256_add_epi32(hi, _mm256_madd_epi16(_mm256_unpackhi_epi16(a, b), c));
++    }
++    *sum_lo = lo;
++    *sum_hi = hi;
++}
++
++static inline void hor_4tap_8(const pel_t *src, int x, const int8_t *coeff,
++                              __m128i *sum_lo, __m128i *sum_hi)
++{
++    __m128i lo = _mm_setzero_si128();
++    __m128i hi = _mm_setzero_si128();
++    int k;
++
++    for (k = 0; k < 2; k++) {
++        __m128i a = _mm_loadu_si128((const __m128i *)(src + x - 1 + 2 * k));
++        __m128i b = _mm_loadu_si128((const __m128i *)(src + x + 2 * k));
++        __m128i c = coeff_pair_128(coeff, k);
++
++        lo = _mm_add_epi32(lo, _mm_madd_epi16(_mm_unpacklo_epi16(a, b), c));
++        hi = _mm_add_epi32(hi, _mm_madd_epi16(_mm_unpackhi_epi16(a, b), c));
++    }
++    *sum_lo = lo;
++    *sum_hi = hi;
++}
++
++static inline void ver_8tap_16(const int16_t *src, int x, int i_src, const int8_t *coeff,
++                               __m256i *sum_lo, __m256i *sum_hi)
++{
++    __m256i lo = _mm256_setzero_si256();
++    __m256i hi = _mm256_setzero_si256();
++    int k;
++
++    for (k = 0; k < 4; k++) {
++        __m256i a = _mm256_loadu_si256((const __m256i *)(src + (2 * k) * i_src + x));
++        __m256i b = _mm256_loadu_si256((const __m256i *)(src + (2 * k + 1) * i_src + x));
++        __m256i c = coeff_pair_256(coeff, k);
++
++        lo = _mm256_add_epi32(lo, _mm256_madd_epi16(_mm256_unpacklo_epi16(a, b), c));
++        hi = _mm256_add_epi32(hi, _mm256_madd_epi16(_mm256_unpackhi_epi16(a, b), c));
++    }
++    *sum_lo = lo;
++    *sum_hi = hi;
++}
++
++static inline void ver_8tap_8(const int16_t *src, int x, int i_src, const int8_t *coeff,
++                              __m128i *sum_lo, __m128i *sum_hi)
++{
++    __m128i lo = _mm_setzero_si128();
++    __m128i hi = _mm_setzero_si128();
++    int k;
++
++    for (k = 0; k < 4; k++) {
++        __m128i a = _mm_loadu_si128((const __m128i *)(src + (2 * k) * i_src + x));
++        __m128i b = _mm_loadu_si128((const __m128i *)(src + (2 * k + 1) * i_src + x));
++        __m128i c = coeff_pair_128(coeff, k);
++
++        lo = _mm_add_epi32(lo, _mm_madd_epi16(_mm_unpacklo_epi16(a, b), c));
++        hi = _mm_add_epi32(hi, _mm_madd_epi16(_mm_unpackhi_epi16(a, b), c));
++    }
++    *sum_lo = lo;
++    *sum_hi = hi;
++}
++
++static inline void ver_4tap_16(const int16_t *src, int x, int i_src, const int8_t *coeff,
++                               __m256i *sum_lo, __m256i *sum_hi)
++{
++    __m256i lo = _mm256_setzero_si256();
++    __m256i hi = _mm256_setzero_si256();
++    int k;
++
++    for (k = 0; k < 2; k++) {
++        __m256i a = _mm256_loadu_si256((const __m256i *)(src + (2 * k) * i_src + x));
++        __m256i b = _mm256_loadu_si256((const __m256i *)(src + (2 * k + 1) * i_src + x));
++        __m256i c = coeff_pair_256(coeff, k);
++
++        lo = _mm256_add_epi32(lo, _mm256_madd_epi16(_mm256_unpacklo_epi16(a, b), c));
++        hi = _mm256_add_epi32(hi, _mm256_madd_epi16(_mm256_unpackhi_epi16(a, b), c));
++    }
++    *sum_lo = lo;
++    *sum_hi = hi;
++}
++
++static inline void ver_4tap_8(const int16_t *src, int x, int i_src, const int8_t *coeff,
++                              __m128i *sum_lo, __m128i *sum_hi)
++{
++    __m128i lo = _mm_setzero_si128();
++    __m128i hi = _mm_setzero_si128();
++    int k;
++
++    for (k = 0; k < 2; k++) {
++        __m128i a = _mm_loadu_si128((const __m128i *)(src + (2 * k) * i_src + x));
++        __m128i b = _mm_loadu_si128((const __m128i *)(src + (2 * k + 1) * i_src + x));
++        __m128i c = coeff_pair_128(coeff, k);
++
++        lo = _mm_add_epi32(lo, _mm_madd_epi16(_mm_unpacklo_epi16(a, b), c));
++        hi = _mm_add_epi32(hi, _mm_madd_epi16(_mm_unpackhi_epi16(a, b), c));
++    }
++    *sum_lo = lo;
++    *sum_hi = hi;
++}
++
++static inline __m256i finish_pel_256(__m256i sum, __m256i offset, __m256i shift,
++                                     __m256i max_value)
++{
++    sum = _mm256_srav_epi32(_mm256_add_epi32(sum, offset), shift);
++    sum = _mm256_max_epi32(sum, _mm256_setzero_si256());
++    return _mm256_min_epi32(sum, max_value);
++}
++
++static inline __m128i finish_pel_128(__m128i sum, __m128i offset, __m128i shift,
++                                     __m128i max_value)
++{
++    sum = _mm_srav_epi32(_mm_add_epi32(sum, offset), shift);
++    sum = _mm_max_epi32(sum, _mm_setzero_si128());
++    return _mm_min_epi32(sum, max_value);
++}
++
++static void hor_8tap_pel(pel_t *dst, int i_dst, const pel_t *src, int i_src,
++                         int width, int height, const int8_t *coeff,
++                         int offset, int shift, int max_value)
++{
++    const __m256i offset256 = _mm256_set1_epi32(offset);
++    const __m256i shift256 = _mm256_set1_epi32(shift);
++    const __m256i max256 = _mm256_set1_epi32(max_value);
++    const __m128i offset128 = _mm_set1_epi32(offset);
++    const __m128i shift128 = _mm_set1_epi32(shift);
++    const __m128i max128 = _mm_set1_epi32(max_value);
++    int y, x;
++
++    for (y = 0; y < height; y++) {
++        for (x = 0; x + 16 <= width; x += 16) {
++            __m256i lo, hi, out;
++            hor_8tap_16(src, x, coeff, &lo, &hi);
++            lo = finish_pel_256(lo, offset256, shift256, max256);
++            hi = finish_pel_256(hi, offset256, shift256, max256);
++            out = _mm256_packus_epi32(lo, hi);
++            _mm256_storeu_si256((__m256i *)(dst + x), out);
++        }
++        if (x + 8 <= width) {
++            __m128i lo, hi, out;
++            hor_8tap_8(src, x, coeff, &lo, &hi);
++            lo = finish_pel_128(lo, offset128, shift128, max128);
++            hi = finish_pel_128(hi, offset128, shift128, max128);
++            out = _mm_packus_epi32(lo, hi);
++            _mm_storeu_si128((__m128i *)(dst + x), out);
++            x += 8;
++        }
++        for (; x < width; x++) {
++            int v = 0;
++            int k;
++            for (k = 0; k < 8; k++) {
++                v += src[x - 3 + k] * coeff[k];
++            }
++            v = (v + offset) >> shift;
++            dst[x] = (pel_t)(v > max_value ? max_value : (v < 0 ? 0 : v));
++        }
++        src += i_src;
++        dst += i_dst;
++    }
++}
++
++static void hor_8tap_i16(int16_t *dst, int i_dst, const pel_t *src, int i_src,
++                         int width, int height, const int8_t *coeff,
++                         int offset, int shift)
++{
++    const __m256i offset256 = _mm256_set1_epi32(offset);
++    const __m256i shift256 = _mm256_set1_epi32(shift);
++    const __m128i offset128 = _mm_set1_epi32(offset);
++    const __m128i shift128 = _mm_set1_epi32(shift);
++    int y, x;
++
++    for (y = 0; y < height; y++) {
++        for (x = 0; x + 16 <= width; x += 16) {
++            __m256i lo, hi, out;
++            hor_8tap_16(src, x, coeff, &lo, &hi);
++            lo = _mm256_srav_epi32(_mm256_add_epi32(lo, offset256), shift256);
++            hi = _mm256_srav_epi32(_mm256_add_epi32(hi, offset256), shift256);
++            out = _mm256_packs_epi32(lo, hi);
++            _mm256_storeu_si256((__m256i *)(dst + x), out);
++        }
++        if (x + 8 <= width) {
++            __m128i lo, hi, out;
++            hor_8tap_8(src, x, coeff, &lo, &hi);
++            lo = _mm_srav_epi32(_mm_add_epi32(lo, offset128), shift128);
++            hi = _mm_srav_epi32(_mm_add_epi32(hi, offset128), shift128);
++            out = _mm_packs_epi32(lo, hi);
++            _mm_storeu_si128((__m128i *)(dst + x), out);
++            x += 8;
++        }
++        for (; x < width; x++) {
++            int v = 0;
++            int k;
++            for (k = 0; k < 8; k++) {
++                v += src[x - 3 + k] * coeff[k];
++            }
++            dst[x] = (int16_t)((v + offset) >> shift);
++        }
++        src += i_src;
++        dst += i_dst;
++    }
++}
++
++static void hor_4tap_pel(pel_t *dst, int i_dst, const pel_t *src, int i_src,
++                         int width, int height, const int8_t *coeff,
++                         int offset, int shift, int max_value)
++{
++    const __m256i offset256 = _mm256_set1_epi32(offset);
++    const __m256i shift256 = _mm256_set1_epi32(shift);
++    const __m256i max256 = _mm256_set1_epi32(max_value);
++    const __m128i offset128 = _mm_set1_epi32(offset);
++    const __m128i shift128 = _mm_set1_epi32(shift);
++    const __m128i max128 = _mm_set1_epi32(max_value);
++    int y, x;
++
++    for (y = 0; y < height; y++) {
++        for (x = 0; x + 16 <= width; x += 16) {
++            __m256i lo, hi, out;
++            hor_4tap_16(src, x, coeff, &lo, &hi);
++            lo = finish_pel_256(lo, offset256, shift256, max256);
++            hi = finish_pel_256(hi, offset256, shift256, max256);
++            out = _mm256_packus_epi32(lo, hi);
++            _mm256_storeu_si256((__m256i *)(dst + x), out);
++        }
++        if (x + 8 <= width) {
++            __m128i lo, hi, out;
++            hor_4tap_8(src, x, coeff, &lo, &hi);
++            lo = finish_pel_128(lo, offset128, shift128, max128);
++            hi = finish_pel_128(hi, offset128, shift128, max128);
++            out = _mm_packus_epi32(lo, hi);
++            _mm_storeu_si128((__m128i *)(dst + x), out);
++            x += 8;
++        }
++        for (; x < width; x++) {
++            int v = 0;
++            int k;
++            for (k = 0; k < 4; k++) {
++                v += src[x - 1 + k] * coeff[k];
++            }
++            v = (v + offset) >> shift;
++            dst[x] = (pel_t)(v > max_value ? max_value : (v < 0 ? 0 : v));
++        }
++        src += i_src;
++        dst += i_dst;
++    }
++}
++
++static void hor_4tap_i16(int16_t *dst, int i_dst, const pel_t *src, int i_src,
++                         int width, int height, const int8_t *coeff,
++                         int offset, int shift)
++{
++    const __m256i offset256 = _mm256_set1_epi32(offset);
++    const __m256i shift256 = _mm256_set1_epi32(shift);
++    const __m128i offset128 = _mm_set1_epi32(offset);
++    const __m128i shift128 = _mm_set1_epi32(shift);
++    int y, x;
++
++    for (y = 0; y < height; y++) {
++        for (x = 0; x + 16 <= width; x += 16) {
++            __m256i lo, hi, out;
++            hor_4tap_16(src, x, coeff, &lo, &hi);
++            lo = _mm256_srav_epi32(_mm256_add_epi32(lo, offset256), shift256);
++            hi = _mm256_srav_epi32(_mm256_add_epi32(hi, offset256), shift256);
++            out = _mm256_packs_epi32(lo, hi);
++            _mm256_storeu_si256((__m256i *)(dst + x), out);
++        }
++        if (x + 8 <= width) {
++            __m128i lo, hi, out;
++            hor_4tap_8(src, x, coeff, &lo, &hi);
++            lo = _mm_srav_epi32(_mm_add_epi32(lo, offset128), shift128);
++            hi = _mm_srav_epi32(_mm_add_epi32(hi, offset128), shift128);
++            out = _mm_packs_epi32(lo, hi);
++            _mm_storeu_si128((__m128i *)(dst + x), out);
++            x += 8;
++        }
++        for (; x < width; x++) {
++            int v = 0;
++            int k;
++            for (k = 0; k < 4; k++) {
++                v += src[x - 1 + k] * coeff[k];
++            }
++            dst[x] = (int16_t)((v + offset) >> shift);
++        }
++        src += i_src;
++        dst += i_dst;
++    }
++}
++
++static void ver_8tap_pel(pel_t *dst, int i_dst, const int16_t *src, int i_src,
++                         int width, int height, const int8_t *coeff,
++                         int offset, int shift, int max_value)
++{
++    const __m256i offset256 = _mm256_set1_epi32(offset);
++    const __m256i shift256 = _mm256_set1_epi32(shift);
++    const __m256i max256 = _mm256_set1_epi32(max_value);
++    const __m128i offset128 = _mm_set1_epi32(offset);
++    const __m128i shift128 = _mm_set1_epi32(shift);
++    const __m128i max128 = _mm_set1_epi32(max_value);
++    int y, x;
++
++    for (y = 0; y < height; y++) {
++        const int16_t *win = src + (y - 3) * i_src;
++        for (x = 0; x + 16 <= width; x += 16) {
++            __m256i lo, hi, out;
++            ver_8tap_16(win, x, i_src, coeff, &lo, &hi);
++            lo = finish_pel_256(lo, offset256, shift256, max256);
++            hi = finish_pel_256(hi, offset256, shift256, max256);
++            out = _mm256_packus_epi32(lo, hi);
++            _mm256_storeu_si256((__m256i *)(dst + x), out);
++        }
++        if (x + 8 <= width) {
++            __m128i lo, hi, out;
++            ver_8tap_8(win, x, i_src, coeff, &lo, &hi);
++            lo = finish_pel_128(lo, offset128, shift128, max128);
++            hi = finish_pel_128(hi, offset128, shift128, max128);
++            out = _mm_packus_epi32(lo, hi);
++            _mm_storeu_si128((__m128i *)(dst + x), out);
++            x += 8;
++        }
++        for (; x < width; x++) {
++            int v = 0;
++            int k;
++            for (k = 0; k < 8; k++) {
++                v += win[k * i_src + x] * coeff[k];
++            }
++            v = (v + offset) >> shift;
++            dst[x] = (pel_t)(v > max_value ? max_value : (v < 0 ? 0 : v));
++        }
++        dst += i_dst;
++    }
++}
++
++static void ver_4tap_pel(pel_t *dst, int i_dst, const int16_t *src, int i_src,
++                         int width, int height, const int8_t *coeff,
++                         int offset, int shift, int max_value)
++{
++    const __m256i offset256 = _mm256_set1_epi32(offset);
++    const __m256i shift256 = _mm256_set1_epi32(shift);
++    const __m256i max256 = _mm256_set1_epi32(max_value);
++    const __m128i offset128 = _mm_set1_epi32(offset);
++    const __m128i shift128 = _mm_set1_epi32(shift);
++    const __m128i max128 = _mm_set1_epi32(max_value);
++    int y, x;
++
++    for (y = 0; y < height; y++) {
++        const int16_t *win = src + (y - 1) * i_src;
++        for (x = 0; x + 16 <= width; x += 16) {
++            __m256i lo, hi, out;
++            ver_4tap_16(win, x, i_src, coeff, &lo, &hi);
++            lo = finish_pel_256(lo, offset256, shift256, max256);
++            hi = finish_pel_256(hi, offset256, shift256, max256);
++            out = _mm256_packus_epi32(lo, hi);
++            _mm256_storeu_si256((__m256i *)(dst + x), out);
++        }
++        if (x + 8 <= width) {
++            __m128i lo, hi, out;
++            ver_4tap_8(win, x, i_src, coeff, &lo, &hi);
++            lo = finish_pel_128(lo, offset128, shift128, max128);
++            hi = finish_pel_128(hi, offset128, shift128, max128);
++            out = _mm_packus_epi32(lo, hi);
++            _mm_storeu_si128((__m128i *)(dst + x), out);
++            x += 8;
++        }
++        for (; x < width; x++) {
++            int v = 0;
++            int k;
++            for (k = 0; k < 4; k++) {
++                v += win[k * i_src + x] * coeff[k];
++            }
++            v = (v + offset) >> shift;
++            dst[x] = (pel_t)(v > max_value ? max_value : (v < 0 ? 0 : v));
++        }
++        dst += i_dst;
++    }
++}
++
++void intpl_luma_block_hor_avx2(pel_t *dst, int i_dst, pel_t *src, int i_src,
++                               int width, int height, const int8_t *coeff)
++{
++    hor_8tap_pel(dst, i_dst, src, i_src, width, height, coeff, 32, 6, max_pel_value);
++}
++
++void intpl_luma_block_ver_avx2(pel_t *dst, int i_dst, pel_t *src, int i_src,
++                               int width, int height, const int8_t *coeff)
++{
++    ver_8tap_pel(dst, i_dst, (const int16_t *)src, i_src, width, height,
++                 coeff, 32, 6, max_pel_value);
++}
++
++void intpl_luma_block_ext_avx2(pel_t *dst, int i_dst, pel_t *src, int i_src,
++                               int width, int height, const int8_t *coeff_h,
++                               const int8_t *coeff_v)
++{
++    enum { TMP_STRIDE = 64 };
++    const int shift1 = g_bit_depth - 8;
++    const int add1 = (1 << shift1) >> 1;
++    const int shift2 = 20 - g_bit_depth;
++    const int add2 = 1 << (shift2 - 1);
++    ALIGN32(int16_t tmp[(64 + 7) * TMP_STRIDE]);
++
++    hor_8tap_i16(tmp, TMP_STRIDE, src - 3 * i_src, i_src, width, height + 7,
++                 coeff_h, add1, shift1);
++    ver_8tap_pel(dst, i_dst, tmp + 3 * TMP_STRIDE, TMP_STRIDE, width, height,
++                 coeff_v, add2, shift2, max_pel_value);
++}
++
++void intpl_chroma_block_hor_avx2(pel_t *dst, int i_dst, pel_t *src, int i_src,
++                                 int width, int height, const int8_t *coeff)
++{
++    hor_4tap_pel(dst, i_dst, src, i_src, width, height, coeff, 32, 6, max_pel_value);
++}
++
++void intpl_chroma_block_ver_avx2(pel_t *dst, int i_dst, pel_t *src, int i_src,
++                                 int width, int height, const int8_t *coeff)
++{
++    ver_4tap_pel(dst, i_dst, (const int16_t *)src, i_src, width, height,
++                 coeff, 32, 6, max_pel_value);
++}
++
++void intpl_chroma_block_ext_avx2(pel_t *dst, int i_dst, pel_t *src, int i_src,
++                                 int width, int height, const int8_t *coeff_h,
++                                 const int8_t *coeff_v)
++{
++    enum { TMP_STRIDE = 32 };
++    const int shift1 = g_bit_depth - 8;
++    const int add1 = (1 << shift1) >> 1;
++    const int shift2 = 20 - g_bit_depth;
++    const int add2 = 1 << (shift2 - 1);
++    ALIGN32(int16_t tmp[(32 + 3) * TMP_STRIDE]);
++
++    hor_4tap_i16(tmp, TMP_STRIDE, src - i_src, i_src, width, height + 3,
++                 coeff_h, add1, shift1);
++    ver_4tap_pel(dst, i_dst, tmp + TMP_STRIDE, TMP_STRIDE, width, height,
++                 coeff_v, add2, shift2, max_pel_value);
++}
++#endif
+ #if !HIGH_BIT_DEPTH

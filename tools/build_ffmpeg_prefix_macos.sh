@@ -206,6 +206,8 @@ DAVS2_ARM64_INTRA_PATCH_PATH="$LOCAL_PATCH_ROOT/davs2-10bit/0008-add-aarch64-neo
 DAVS2_ARM64_INTRA_BILINEAR_PATCH_PATH="$LOCAL_PATCH_ROOT/davs2-10bit/0009-add-aarch64-neon-intra-bilinear-10bit.patch"
 DAVS2_SEQ_DISPLAY_COLOR_PATCH_PATH="$LOCAL_PATCH_ROOT/davs2-10bit/0010-export-sequence-display-color-description.patch"
 DAVS2_ASM_FIX_PATCH_PATH="$LOCAL_PATCH_ROOT/davs2-10bit/0011-enable-asm-intrinsics-on-macos.patch"
+DAVS2_X86_DISPATCH_PATCH_PATH="$LOCAL_PATCH_ROOT/davs2-10bit/0012-x86-build-avx-codepaths-as-dispatch-only.patch"
+DAVS2_X86_MC_PATCH_PATH="$LOCAL_PATCH_ROOT/davs2-10bit/0013-x86-10bit-motion-compensation.patch"
 DAVS2_ENABLE_EXPERIMENTAL_MC_INTERP="${DAVS2_ENABLE_EXPERIMENTAL_MC_INTERP:-1}"
 if [[ "$TARGET_ARCH" == "arm64" ]]; then
   FFMPEG_EXTRA_CFLAGS_DEFAULT="$(resolve_apple_silicon_extra_cflags_default "${FFMPEG_APPLE_MCPU:-${APPLE_SILICON_DISTRIBUTION_MCPU:-apple-m1}}")"
@@ -251,6 +253,8 @@ DAVS2_EFFECTIVE_EXTRA_CFLAGS="${DAVS2_EXTRA_CFLAGS:-$DAVS2_EXTRA_CFLAGS_DEFAULT}
 DAVS2_EFFECTIVE_EXTRA_LDFLAGS="${DAVS2_EXTRA_LDFLAGS:-$DAVS2_EXTRA_LDFLAGS_DEFAULT}"
 FFMPEG_CAVS_DRA_BASE_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0001-libcavs-add-avs-avsplus-dra-base.patch"
 FFMPEG_DAVS2_COLOR_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0002-libdavs2-export-sequence-display-color-metadata.patch"
+FFMPEG_DAVS2_RESET_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0007-libdavs2-reset-reference-state-on-seek.patch"
+FFMPEG_CAVS_FIELD_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0008-libcavs-propagate-output-picture-field-metadata.patch"
 FFMPEG_AV3A_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0003-libarcdav3a-add-av3a-audio-vivid-decoder.patch"
 FFMPEG_AV3A_FORMAT_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0004-av3a-container-parser-demux.patch"
 FFMPEG_AV3A_PROBE_PATCH_PATH="$LOCAL_PATCH_ROOT/ffmpeg/0005-av3a-content-probing.patch"
@@ -464,6 +468,8 @@ if [[ "$LICENSE_FLAVOR" == "gpl" ]]; then
     fi
   else
     davs2_patch_paths+=("$DAVS2_ASM_FIX_PATCH_PATH")
+    davs2_patch_paths+=("$DAVS2_X86_DISPATCH_PATCH_PATH")
+    davs2_patch_paths+=("$DAVS2_X86_MC_PATCH_PATH")
   fi
   davs2_patch_paths+=("$DAVS2_SEQ_DISPLAY_COLOR_PATCH_PATH")
 
@@ -552,6 +558,7 @@ log "Applying FFmpeg compatibility patches"
 if [[ "$ENABLE_LIBDAVS2" == true ]]; then
   ffmpeg_davs2_patch_paths=(
     "$FFMPEG_DAVS2_COLOR_PATCH_PATH"
+    "$FFMPEG_DAVS2_RESET_PATCH_PATH"
   )
   for patch_path in "${ffmpeg_davs2_patch_paths[@]}"; do
     if [[ ! -f "$patch_path" ]]; then
@@ -571,6 +578,15 @@ if [[ ! -f "$FFMPEG_CAVS_DRA_BASE_PATCH_PATH" ]]; then
 fi
 if ! apply_patch_with_fallback "$SOURCE_DIR" "$FFMPEG_CAVS_DRA_BASE_PATCH_PATH"; then
   echo "Failed to apply FFmpeg cavs/dra base patch: $FFMPEG_CAVS_DRA_BASE_PATCH_PATH" >&2
+  exit 1
+fi
+
+if [[ ! -f "$FFMPEG_CAVS_FIELD_PATCH_PATH" ]]; then
+  echo "Missing FFmpeg CAVS field metadata patch: $FFMPEG_CAVS_FIELD_PATCH_PATH" >&2
+  exit 1
+fi
+if ! apply_patch_with_fallback "$SOURCE_DIR" "$FFMPEG_CAVS_FIELD_PATCH_PATH"; then
+  echo "Failed to apply FFmpeg CAVS field metadata patch: $FFMPEG_CAVS_FIELD_PATCH_PATH" >&2
   exit 1
 fi
 
