@@ -1,0 +1,104 @@
+diff --git a/build/linux/Makefile b/build/linux/Makefile
+--- a/build/linux/Makefile
++++ b/build/linux/Makefile
+@@ -35,5 +35,6 @@ SRCSO =
+ OBJS =
+ OBJAVX =
++OBJAVX2 =
+ OBJSO =
+ OBJCLI =
+ 
+@@ -78,14 +79,15 @@ SRCS     += common/vec/intrinsic.cc \
+ 			common/vec/intrinsic_idct.cc \
+ 			common/vec/intrinsic_pixel.cc
+ 
+-SRCSAVX = common/vec/intrinsic_sao_avx2.cc \
+-		  common/vec/intrinsic_deblock_avx2.cc \
+-		  common/vec/intrinsic_intra-pred_avx2.cc \
+-		  common/vec/intrinsic_inter_pred_avx2.cc \
+-		  common/vec/intrinsic_pixel_avx.cc \
+-		  common/vec/intrinsic_idct_avx2.cc
++SRCSAVX = common/vec/intrinsic_pixel_avx.cc
+ 
+-CFLAGS += -mmmx -msse -msse2 -msse3 -msse4 -msse4.1 -msse4.2 -msse4a -mssse3 -mavx
++SRCSAVX2 = common/vec/intrinsic_sao_avx2.cc \
++		   common/vec/intrinsic_deblock_avx2.cc \
++		   common/vec/intrinsic_intra-pred_avx2.cc \
++		   common/vec/intrinsic_inter_pred_avx2.cc \
++		   common/vec/intrinsic_idct_avx2.cc
++
++CFLAGS += -mmmx -msse -msse2 -msse3 -msse4 -msse4.1 -msse4.2 -msse4a -mssse3
+ # ASMSRC   = $(X86SRC:-32.asm=-64.asm)
+ ASMSRC   = $(X86SRC)
+ ASFLAGS += -DARCH_X86_64=1
+@@ -165,6 +167,7 @@ endif
+ 
+ OBJS   += $(SRCS:%.cc=%.o)
+ OBJAVX += $(SRCSAVX:%.cc=%.o)
++OBJAVX2 += $(SRCSAVX2:%.cc=%.o)
+ OBJCLI += $(SRCCLI:%.c=%.o)
+ OBJSO  += $(SRCSO:%.cc=%.o)
+ 
+@@ -175,15 +178,15 @@ cli: davs2$(EXE)
+ lib-static: $(LIBDAVS2)
+ lib-shared: $(SONAME)
+ 
+-$(LIBDAVS2): $(GENERATED) .depend $(OBJS) $(OBJAVX) $(OBJASM)
++$(LIBDAVS2): $(GENERATED) .depend $(OBJS) $(OBJAVX) $(OBJAVX2) $(OBJASM)
+ 	@echo "\033[33m [linking static] $(LIBDAVS2) \033[0m"
+ 	rm -f $(LIBDAVS2)
+-	$(AR)$@ $(OBJS) $(OBJAVX) $(OBJASM)
++	$(AR)$@ $(OBJS) $(OBJAVX) $(OBJAVX2) $(OBJASM)
+ 	$(if $(RANLIB), $(RANLIB) $@)
+ 
+-$(SONAME): $(GENERATED) .depend $(OBJS) $(OBJAVX) $(OBJASM) $(OBJSO)
++$(SONAME): $(GENERATED) .depend $(OBJS) $(OBJAVX) $(OBJAVX2) $(OBJASM) $(OBJSO)
+ 	@echo "\033[33m [linking shared] $(SONAME) \033[0m"
+-	$(LD)$@ $(OBJS) $(OBJAVX) $(OBJASM) $(OBJSO) $(SOFLAGS) $(LDFLAGS)
++	$(LD)$@ $(OBJS) $(OBJAVX) $(OBJAVX2) $(OBJASM) $(OBJSO) $(SOFLAGS) $(LDFLAGS)
+ 
+ ifneq ($(EXE),)
+ .PHONY: davs2 checkasm
+@@ -199,7 +202,7 @@ checkasm$(EXE): $(GENERATED) .depend $(OBJCHK) $(LIBDAVS2)
+ 	@echo "\033[33m [linking checkasm] checkasm$(EXE) \033[0m"
+ 	$(LD)$@ $(OBJCHK) $(LIBDAVS2) $(LDFLAGS)
+ 
+-$(OBJS) $(OBJAVX) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK): .depend
++$(OBJS) $(OBJAVX) $(OBJAVX2) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK): .depend
+ 
+ %.o: %.asm common/x86/x86inc.asm common/x86/x86util.asm
+ 	@echo "\033[33m [Compiling asm]: $< \033[0m"
+@@ -219,8 +222,12 @@ $(OBJS) $(OBJAVX) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK): .depend
+ 	$(RC) $(RCFLAGS)$@ $<
+ 
+ $(OBJAVX):
+-	@echo "\033[33m [Compiling]: $(@:.o=.cc) \033[0m"
+-	$(CC) $(CFLAGS) -mavx2 -c -o $@ $(SRCPATH)/$(@:.o=.cc)
++	@echo "\033[33m [Compiling AVX]: $(@:.o=.cc) \033[0m"
++	$(CC) $(CFLAGS) -mavx -c -o $@ $(SRCPATH)/$(@:.o=.cc)
++
++$(OBJAVX2):
++	@echo "\033[33m [Compiling AVX2]: $(@:.o=.cc) \033[0m"
++	$(CC) $(CFLAGS) -mavx2 -c -o $@ $(SRCPATH)/$(@:.o=.cc)
+ 
+ %.o: %.cc
+ 	@echo "\033[33m [Compiling]: $< \033[0m"
+@@ -236,8 +243,8 @@ ifeq ($(COMPILER),CL)
+ 	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS) $(SRCCLI) $(SRCSO)), $(SRCPATH)/tools/msvsdepend.sh "$(CC)" "$(CFLAGS)" "$(SRC)" "$(SRC:$(SRCPATH)/%.cc=%.o)" 1>> .depend;)
+-	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCSAVX)), $(SRCPATH)/tools/msvsdepend.sh "$(CC)" "$(CFLAGS)" "$(SRC)" "$(SRC:$(SRCPATH)/%.cc=%.o)" 1>> .depend;)
++	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCSAVX) $(SRCSAVX2)), $(SRCPATH)/tools/msvsdepend.sh "$(CC)" "$(CFLAGS)" "$(SRC)" "$(SRC:$(SRCPATH)/%.cc=%.o)" 1>> .depend;)
+ else
+ 	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCS) $(SRCCLI) $(SRCSO)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.cc=%.o) $(DEPMM) 1>> .depend;)
+-	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCSAVX)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.cc=%.o) $(DEPMM) 1>> .depend;)
++	@$(foreach SRC, $(addprefix $(SRCPATH)/, $(SRCSAVX) $(SRCSAVX2)), $(CC) $(CFLAGS) $(SRC) $(DEPMT) $(SRC:$(SRCPATH)/%.cc=%.o) $(DEPMM) 1>> .depend;)
+ endif
+ 
+ config.mak:
+@@ -282,6 +289,6 @@ endif
+ 
+ clean:
+-	rm -f $(OBJS) $(OBJASM) $(OBJCLI) $(OBJSO) $(SONAME) 
++	rm -f $(OBJS) $(OBJAVX) $(OBJAVX2) $(OBJASM) $(OBJCLI) $(OBJSO) $(SONAME)
+ 	rm -f *.a *.lib *.exp *.pdb libdavs2.so* davs2 davs2.exe .depend TAGS
+ 	rm -f checkasm checkasm.exe $(OBJCHK) $(GENERATED) davs2_lookahead.cclbin
+ 	rm -f example example.exe $(OBJEXAMPLE)

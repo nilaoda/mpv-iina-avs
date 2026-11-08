@@ -1,0 +1,83 @@
+diff --git a/libavcodec/libdavs2.c b/libavcodec/libdavs2.c
+--- a/libavcodec/libdavs2.c
++++ b/libavcodec/libdavs2.c
+@@ -38,6 +38,11 @@
+ 
+     davs2_picture_t  out_frame;  // output data, frame data
+     davs2_seq_info_t headerset;  // output data, sequence header
++
++    enum AVColorRange container_color_range;
++    enum AVColorPrimaries container_color_primaries;
++    enum AVColorTransferCharacteristic container_color_trc;
++    enum AVColorSpace container_colorspace;
+ 
+ }DAVS2Context;
+ 
+@@ -116,6 +121,11 @@
+     DAVS2Context *cad = avctx->priv_data;
+     int cpu_flags = av_get_cpu_flags();
+ 
++    cad->container_color_range = avctx->color_range;
++    cad->container_color_primaries = avctx->color_primaries;
++    cad->container_color_trc = avctx->color_trc;
++    cad->container_colorspace = avctx->colorspace;
++
+     /* init the decoder */
+     cad->param.threads      = avctx->thread_count;
+     cad->param.info_level   = 0;
+@@ -214,17 +224,24 @@
+ 
+ static void davs2_flush(AVCodecContext *avctx)
+ {
+-    DAVS2Context *cad      = avctx->priv_data;
+-    int           ret      = DAVS2_GOT_FRAME;
+-
+-    while (ret == DAVS2_GOT_FRAME) {
+-        ret = davs2_decoder_flush(cad->decoder, &cad->headerset, &cad->out_frame);
+-        davs2_decoder_frame_unref(cad->decoder, &cad->out_frame);
+-    }
+-
+-    if (ret == DAVS2_ERROR) {
+-        av_log(avctx, AV_LOG_WARNING, "Decoder flushing failed.\n");
+-    }
++    DAVS2Context *cad = avctx->priv_data;
++
++    /* Native flush drains delayed pictures but retains DPB/RPS reservations.
++     * An explicit buffer flush (e.g. seek) must discard all reference state.
++     * EOF draining continues through send_delayed_frame instead. */
++    if (cad->decoder)
++        davs2_decoder_close(cad->decoder);
++    cad->decoder = NULL;
++    memset(&cad->packet, 0, sizeof(cad->packet));
++    memset(&cad->out_frame, 0, sizeof(cad->out_frame));
++    memset(&cad->headerset, 0, sizeof(cad->headerset));
++    avctx->color_range = cad->container_color_range;
++    avctx->color_primaries = cad->container_color_primaries;
++    avctx->color_trc = cad->container_color_trc;
++    avctx->colorspace = cad->container_colorspace;
++    cad->decoder = davs2_decoder_open(&cad->param);
++    if (!cad->decoder)
++        av_log(avctx, AV_LOG_ERROR, "Could not reset the AVS2 decoder after flushing.\n");
+ }
+ 
+ static int send_delayed_frame(AVCodecContext *avctx, AVFrame *frame, int *got_frame)
+@@ -250,7 +267,6 @@
+ 
+     /* close the decoder */
+     if (cad->decoder) {
+-        davs2_flush(avctx);
+         davs2_decoder_close(cad->decoder);
+         cad->decoder = NULL;
+     }
+@@ -265,6 +281,11 @@
+     int           buf_size = avpkt->size;
+     const uint8_t *buf_ptr = avpkt->data;
+     int           ret      = DAVS2_DEFAULT;
++
++    if (!cad->decoder) {
++        *got_frame = 0;
++        return AVERROR_EXTERNAL;
++    }
+ 
+     /* end of stream, output what is still in the buffers */
+     if (!buf_size) {

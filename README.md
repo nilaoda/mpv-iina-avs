@@ -186,7 +186,7 @@ This will:
 - require `nasm` to be installed (`brew install nasm`)
 - produce x86-64 dylib bundles with appropriate artifact naming
 
-The x86-64 build uses the same FFmpeg and mpv patch stacks as arm64. The davs2 decoder gets SSE128 10-bit acceleration with IDCT/IDWT AVX2 optimizations on x86-64.
+The x86-64 build uses the same FFmpeg and mpv patch stacks as arm64. The davs2 decoder gets SSE128 10-bit acceleration with AVX2 IDCT/IDWT and luma/chroma motion-compensation interpolation. AVX and AVX2 translation units are compiled separately and selected through runtime CPU detection; generic objects retain the existing SSE4.x baseline. The scalar motion-compensation fallback remains available when AVX2 is disabled or unavailable.
 
 For local cross-compilation from arm64, ensure Homebrew packages installed under `/usr/local` (x86_64) are available — the build script uses `-arch x86_64` and expects x86_64 libraries in the standard Homebrew prefix.
 
@@ -265,6 +265,16 @@ media bundle before building the matching IINA change.
   - allows x86-64 builds to use SSE128 and AVX2 accelerated code paths (SAO, ALF, deblock, intra-pred, IDCT, IDWT, pixel operations)
   - only applied on x86-64 builds; arm64 builds use the NEON patches instead
 
+- `tools/patches/davs2-10bit/0012-x86-build-avx-codepaths-as-dispatch-only.patch`
+  - separates AVX and AVX2 translation units and removes global `-mavx`
+  - keeps generic objects on the existing SSE4.x baseline for runtime dispatch
+  - only applied on x86-64 builds
+
+- `tools/patches/davs2-10bit/0013-x86-10bit-motion-compensation.patch`
+  - adds AVX2 10-bit luma/chroma horizontal, vertical and two-stage interpolation
+  - enables compiler vectorization only for `common/mc.o`, including Apple Clang's GNU-compatible flag handling
+  - retains scalar interpolation on CPUs without AVX2; arm64 keeps its NEON stack
+
 - `tools/patches/ffmpeg/0002-libdavs2-export-sequence-display-color-metadata.patch`
   - makes FFmpeg's `libdavs2` wrapper consume the additional AVS2 sequence-display metadata exported by the local `davs2-10bit` patch stack
   - maps AVS2 range / primaries / transfer / matrix values onto FFmpeg `AVCodecContext` and `AVFrame` color fields
@@ -313,6 +323,57 @@ media bundle before building the matching IINA change.
   - uses FFmpeg's limiter and mpv's existing filter draining/reset handling
   - routes playback-speed changes to the mixing resampler only
   - preserves explicit dithering settings at the final sample-format conversion
+
+### AVS decode and seek fixes
+
+- `tools/patches/ffmpeg/0007-libdavs2-reset-reference-state-on-seek.patch`
+  - recreates the native AVS2 decoder on `avcodec_flush_buffers`, clearing DPB/RPS reservations after a seek while preserving decoder parameters
+  - keeps EOF draining separate and closes without creating another decoder
+  - clears cached packets, frames and headers, restores the original container color tags, and reports decoder recreation failures on subsequent decode calls
+- `tools/patches/ffmpeg/0008-libcavs-propagate-output-picture-field-metadata.patch`
+  - stores progressive/interlaced and field-order metadata with each reconstructed AVS/AVS+ picture, including reordered and delayed output
+  - exposes the metadata through the existing local `cavs_param` output fields
+
+The AArch64 NEON primitives remain enabled on arm64. The decoder retains
+upstream DPB lifetime rules:
+`i_ref_count == 0` does not make a picture disposable while
+`b_refered_by_others` still reserves it for future references.
+
+### AVS regression tests
+
+After building the x86-64 davs2 source tree, run the scalar/AVX2 interpolation
+comparison on an AVX2-capable Intel CPU. `DAVS2_SOURCE` must point to the patched
+source directory and `WORK_ROOT` to an absolute build directory:
+
+```bash
+clang++ -arch x86_64 -std=c++11 -O2 -DHIGH_BIT_DEPTH=1 -DBIT_DEPTH=10 \
+  -I"$DAVS2_SOURCE/build/linux" -I"$DAVS2_SOURCE/source" \
+  tests/davs2_mc_x86.cc "$DAVS2_SOURCE/build/linux/libdavs2.a" -lpthread \
+  -o "$WORK_ROOT/davs2-mc-test"
+"$WORK_ROOT/davs2-mc-test"
+```
+
+The test compares horizontal, vertical and two-stage luma/chroma interpolation
+against scalar output across filter phases, normal block sizes, unaligned
+buffers, clipping extremes and scalar tails. It also checks output padding and
+SSE fallback dispatch. Exit code `77` means the runtime does not expose AVX2;
+this includes Rosetta configurations that cannot execute the comparison.
+
+For seek testing, use a short AVS2 elementary stream (16 to 512 decoded frames,
+starting with a sequence header and decodable I picture). Link against the
+freshly built FFmpeg prefix:
+
+```bash
+PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig" clang -O2 \
+  tests/avs2_seek.c $(PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig" \
+  pkg-config --cflags --libs libavformat libavcodec libavutil) \
+  -Wl,-rpath,"$FFMPEG_PREFIX/lib" -o "$WORK_ROOT/avs2-seek-test"
+"$WORK_ROOT/avs2-seek-test" /absolute/path/to/short.avs2
+```
+
+The test compares every frame's pixel MD5 and color/field metadata across
+repeated seeks after EOF, a seek with delayed pictures in flight, and repeated
+buffer flushes. Run it with a process timeout to catch decoder hangs.
 
 ### Display ICC regression test (macOS)
 
@@ -425,7 +486,7 @@ Both arch bundles (iina-mpv-bundle + ffmpeg-cli-bundle) end up in the same relea
 
 - both Apple Silicon (arm64) and Intel (x86-64) FFmpeg / `libmpv` / IINA dependency builds are supported
 - on arm64, `davs2-10bit` builds successfully with the vendored AArch64 NEON optimization stack enabled by default
-- on x86-64, `davs2-10bit` builds with SSE128 10-bit acceleration and AVX2 IDCT/IDWT optimizations; the x86 assembly/intrinsic code path was previously blocked by a forced `asm="no"` flag in the upstream configure, which is now fixed via the 0011 patch
+- on x86-64, `davs2-10bit` builds with SSE128 10-bit acceleration and AVX2 IDCT/IDWT and motion-compensation interpolation; the x86 assembly/intrinsic code path was previously blocked by a forced `asm="no"` flag in the upstream configure, which is now fixed via the 0011 patch
 - the current Apple Silicon `davs2-10bit` patch stack has been validated against bit-exact decode checks while significantly improving AVS2 10-bit decode throughput in local benchmark runs
 - the AVS+ patch stack preserves reliable progressive / interlaced scan tagging for downstream tools
 - AVS2 sequence-display color metadata is now propagated through `davs2-10bit` and FFmpeg, so basic tags such as range, BT.2020 matrix / primaries, and HLG transfer characteristics are visible to downstream players and tools
